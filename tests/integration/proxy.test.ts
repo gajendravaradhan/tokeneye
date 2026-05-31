@@ -69,7 +69,7 @@ describe("createHandler health check", () => {
     expect(body.ok).toBe(true);
     expect(body.primary).toBe("key1");
     expect(body.mode).toBe("failover");
-    expect(body.keys).toEqual(["key1", "key2"]);
+    expect(body.keyCount).toBe(2);
     expect(body.recordCount).toBe(0);
   });
 
@@ -90,7 +90,7 @@ describe("createHandler proxy", () => {
   beforeAll(() => { db = new Database(":memory:"); });
   afterAll(() => db.close());
 
-  test("forwards request and returns upstream response with x-tokeneye-key header", async () => {
+  test("forwards request and returns upstream response", async () => {
     let capturedAuth = "";
     let capturedBody = "";
 
@@ -117,7 +117,6 @@ describe("createHandler proxy", () => {
     const res = await handler(req);
 
     expect(res.status).toBe(200);
-    expect(res.headers.get("x-tokeneye-key")).toBe("key1");
     expect(capturedAuth).toBe("Bearer sk-key1-abc");
     expect(capturedBody).toContain("Hello");
 
@@ -144,7 +143,6 @@ describe("createHandler proxy", () => {
     expect(res.headers.get("content-encoding")).toBeNull();
     expect(res.headers.get("keep-alive")).toBeNull();
     expect(res.headers.get("content-type")).toBe("application/json");
-    expect(res.headers.get("x-tokeneye-key")).toBe("key1");
   });
 });
 
@@ -175,7 +173,6 @@ describe("createHandler failover", () => {
     const res = await handler(req);
 
     expect(res.status).toBe(200);
-    expect(res.headers.get("x-tokeneye-key")).toBe("key2");
     expect(call).toBe(2);
   });
 
@@ -209,7 +206,6 @@ describe("createHandler failover", () => {
     const res = await handler(req);
 
     expect(res.status).toBe(200);
-    expect(res.headers.get("x-tokeneye-key")).toBe("key3");
     expect(call).toBe(3);
   });
 
@@ -259,7 +255,7 @@ describe("createHandler response details", () => {
   beforeAll(() => { db = new Database(":memory:"); });
   afterAll(() => db.close());
 
-  test("x-tokeneye-key reflects the key that served the response", async () => {
+  test("fails over to next key on 429 with response details", async () => {
     let call = 0;
     const mockFetch = async (_url: string, init: RequestInit) => {
       call++;
@@ -278,7 +274,6 @@ describe("createHandler response details", () => {
       messages: [{ role: "user", content: "hi" }],
     });
     const res = await handler(req);
-    expect(res.headers.get("x-tokeneye-key")).toBe("key2");
   });
 
   test("preserves response status text", async () => {
@@ -367,7 +362,6 @@ describe("createHandler network errors", () => {
     const res = await handler(req);
 
     expect(res.status).toBe(200);
-    expect(res.headers.get("x-tokeneye-key")).toBe("key2");
     expect(call).toBe(2);
   });
 
@@ -398,6 +392,52 @@ describe("createHandler request metadata", () => {
 
   beforeAll(() => { db = new Database(":memory:"); });
   afterAll(() => db.close());
+
+  test("body size over 5MB returns error", async () => {
+    const db2 = new Database(":memory:");
+    const config = makeConfig();
+    const mockFetch = async () => successResponse();
+    const handler = createHandler(() => config, db2, {
+      fetchImpl: mockFetch as typeof fetch,
+    });
+
+    const largeBody = "x".repeat(5 * 1024 * 1024 + 100);
+    const req = new Request("http://localhost:8787/v1/chat/completions", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: largeBody,
+    });
+
+    const res = await handler(req);
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(body.error).toContain("exhausted");
+    db2.close();
+  });
+
+  test("502 error response does not leak internal details", async () => {
+    const db2 = new Database(":memory:");
+    const mockFetch = async () => {
+      throw new Error("sk-secret-key-12345678");
+    };
+    const config = makeConfig();
+    const handler = createHandler(() => config, db2, {
+      fetchImpl: mockFetch as typeof fetch,
+    });
+
+    const req = makeRequest("/v1/chat/completions", {
+      model: "gpt-4",
+      messages: [{ role: "user", content: "hi" }],
+    });
+    const res = await handler(req);
+
+    expect(res.status).toBe(502);
+    const body = await res.json();
+    expect(body.error).toContain("exhausted");
+    expect(body.detail).toBeUndefined();
+    expect(body.stack).toBeUndefined();
+    db2.close();
+  });
 
   test("reads model from request body", async () => {
     const mockFetch = async () =>

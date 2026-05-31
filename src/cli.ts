@@ -45,8 +45,8 @@ OPTIONS (for start/proxy/dashboard):
 
 EXAMPLES:
   tokeneye init
-  tokeneye keys add pro sk-xxxxxxxx
-  tokeneye keys add personal sk-yyyyyyyy
+  tokeneye keys add pro <your-api-key>
+  tokeneye keys add personal <your-api-key>
   tokeneye start
   tokeneye dashboard --port 3000
 `);

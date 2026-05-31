@@ -318,8 +318,80 @@ describe("API handler", () => {
   });
 
   test("CORS headers on error responses", () => {
-    const req = new Request("http://localhost/api/unknown", { headers: { origin: "http://localhost:3000" } });
+    const req = new Request("http://localhost/api/unknown", {
+      headers: { origin: "http://localhost:3000" },
+    });
     const res = handler(req);
     expect(res.headers.get("access-control-allow-origin")).toBe("http://localhost:3000");
+  });
+});
+
+describe("API security", () => {
+  const db = new Database(":memory:");
+  seedMetrics(db);
+  const handler = createApiHandler(makeApiDb(db));
+
+  afterAll(() => {
+    db.close();
+  });
+
+  test("rate limiting returns 429 after 300 requests", () => {
+    const limiterDb = new Database(":memory:");
+    const limiterHandler = createApiHandler(makeApiDb(limiterDb));
+
+    for (let i = 0; i < 300; i++) {
+      const req = new Request(`http://localhost/api/health?t=${i}`);
+      const res = limiterHandler(req);
+      expect(res.status).not.toBe(429);
+    }
+
+    const blockedReq = new Request("http://localhost/api/health");
+    const blockedRes = limiterHandler(blockedReq);
+    expect(blockedRes.status).toBe(429);
+
+    limiterDb.close();
+  });
+
+  test("invalid dateRange returns error", async () => {
+    const req = new Request("http://localhost/api/overview?dateRange=notreal");
+    const res = handler(req);
+    expect(res.status).toBe(500);
+    const body = await jsonBody(res);
+    expect(body.error).toContain("Invalid dateRange");
+  });
+
+  test("invalid status returns error", async () => {
+    const req = new Request("http://localhost/api/overview?dateRange=all&status=unknown");
+    const res = handler(req);
+    expect(res.status).toBe(500);
+    const body = await jsonBody(res);
+    expect(body.error).toContain("Invalid status");
+  });
+
+  test("response includes security headers", () => {
+    const req = new Request("http://localhost/api/health");
+    const res = handler(req);
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("x-frame-options")).toBe("DENY");
+    expect(res.headers.get("content-security-policy")).toContain("default-src");
+    expect(res.headers.get("content-security-policy")).toContain("frame-ancestors");
+    expect(res.headers.get("referrer-policy")).toBe("strict-origin-when-cross-origin");
+  });
+
+  test("CORS origin matches request origin not wildcard", () => {
+    const req = new Request("http://localhost/api/health", {
+      headers: { Origin: "http://localhost:8788" },
+    });
+    const res = handler(req);
+    expect(res.headers.get("access-control-allow-origin")).toBe("http://localhost:8788");
+  });
+
+  test("error responses sanitize key-like patterns", async () => {
+    const req = new Request("http://localhost/api/overview?dateRange=sk-mysecretkey12345");
+    const res = handler(req);
+    expect(res.status).toBe(500);
+    const body = await jsonBody(res);
+    expect(body.error).not.toContain("sk-mysecretkey12345");
+    expect(body.error).toContain("sk-***");
   });
 });

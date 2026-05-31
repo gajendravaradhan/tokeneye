@@ -87,7 +87,7 @@ export function createHandler(
           ok: true,
           primary: config.primary,
           mode: config.mode,
-          keys: config.keys.map((k) => k.label),
+          keyCount: config.keys.length,
           recordCount: db.recordCount(),
         }),
         { headers: { "content-type": "application/json" } },
@@ -132,7 +132,6 @@ export function createHandler(
           recordUsage(upstreamRes as unknown as Response, entry.label, reqMeta, startTime, upstreamRes.status, db).catch(() => {});
 
           const stripped = stripResponseHeaders(upstreamRes.headers);
-          stripped.set("x-tokeneye-key", entry.label);
           return new Response(upstreamRes.body, {
             status: upstreamRes.status,
             statusText: upstreamRes.statusText,
@@ -147,23 +146,6 @@ export function createHandler(
         }
 
         const stripped = stripResponseHeaders(upstreamRes.headers);
-        stripped.set("x-tokeneye-key", entry.label);
-
-        db.insertMetrics({
-          timestamp: new Date().toISOString(),
-          subscription: entry.label,
-          model: reqMeta.model,
-          promptTokens: reqMeta.estimatedInputTokens ?? 0,
-          completionTokens: 0,
-          totalTokens: reqMeta.estimatedInputTokens ?? 0,
-          latencyMs: Date.now() - startTime,
-          status: upstreamRes.status,
-          stream: reqMeta.stream,
-          project: reqMeta.project,
-          agent: reqMeta.agent,
-          error: `HTTP ${upstreamRes.status}`,
-        });
-
         return new Response(upstreamRes.body, {
           status: upstreamRes.status,
           statusText: upstreamRes.statusText,

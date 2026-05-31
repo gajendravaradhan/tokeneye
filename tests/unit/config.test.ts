@@ -137,10 +137,53 @@ describe("assertServable", () => {
 describe("addKey", () => {
   test("appends a new key and sets primary if none existed", () => {
     const cfg = baseConfig({ keys: [], primary: "" });
-    const result = addKey(cfg, "alpha", "sk-test-alpha-key-16c");
+    const result = addKey(cfg, "alpha", "sk-alpha12345678");
     expect(result.keys).toHaveLength(1);
-    expect(result.keys[0]).toEqual({ label: "alpha", key: "sk-test-alpha-key-16c" });
+    expect(result.keys[0]).toEqual({ label: "alpha", key: "sk-alpha12345678" });
     expect(result.primary).toBe("alpha");
+  });
+
+  test("appends a key without changing existing primary", () => {
+    const cfg = baseConfig();
+    const result = addKey(cfg, "gamma", "sk-gamma12345678");
+    expect(result.keys).toHaveLength(3);
+    expect(result.keys[2]).toEqual({ label: "gamma", key: "sk-gamma12345678" });
+    expect(result.primary).toBe("alpha");
+  });
+
+  test("throws on duplicate label", () => {
+    const cfg = baseConfig();
+    expect(() => addKey(cfg, "alpha", "sk-another123456")).toThrow(
+      "label 'alpha' already exists",
+    );
+  });
+
+  test("does not mutate original config", () => {
+    const cfg = baseConfig();
+    const before = cfg.keys.length;
+    addKey(cfg, "gamma", "sk-gamma12345678");
+    expect(cfg.keys).toHaveLength(before);
+  });
+
+  test("rejects short keys (< 16 chars)", () => {
+    const cfg = baseConfig({ keys: [], primary: "" });
+    expect(() => addKey(cfg, "newkey", "sk-short")).toThrow(
+      "Key 'newkey' is too short",
+    );
+  });
+
+  test("rejects keys with invalid characters", () => {
+    const cfg = baseConfig({ keys: [], primary: "" });
+    expect(() => addKey(cfg, "newkey", "sk-alpha with spaces")).toThrow(
+      "Key 'newkey' contains invalid characters",
+    );
+  });
+
+  test("rejects empty key", () => {
+    const cfg = baseConfig({ keys: [], primary: "" });
+    expect(() => addKey(cfg, "newkey", "")).toThrow(
+      "must be a non-empty string",
+    );
   });
 
   test("appends a key without changing existing primary", () => {
