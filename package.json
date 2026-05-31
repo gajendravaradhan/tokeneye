@@ -1,0 +1,35 @@
+{
+  "name": "tokeneye",
+  "version": "1.0.0",
+  "description": "Model usage analytics dashboard for OpenCode Zen subscriptions — track tokens, models, and costs across all your API keys",
+  "type": "module",
+  "bin": {
+    "tokeneye": "bin/tokeneye"
+  },
+  "engines": {
+    "bun": ">=1.3.0"
+  },
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "dashboard": "bun run src/dashboard.ts",
+    "test": "bun test",
+    "test:cov": "bun test --coverage",
+    "test:unit": "bun test tests/unit",
+    "test:integration": "bun test tests/integration",
+    "test:e2e": "bun test tests/e2e",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome ci .",
+    "format": "biome format --write .",
+    "build:frontend": "cd frontend && bun run build",
+    "prepublishOnly": "bun run test:cov && bun run typecheck"
+  },
+  "dependencies": {
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/bun": "^1.1.14",
+    "typescript": "^5.7.2"
+  }
+}

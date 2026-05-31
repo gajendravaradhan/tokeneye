@@ -1,0 +1,8 @@
+#!/usr/bin/env bun
+// tokeneye — entry point for the CLI
+import { runCli } from "../src/cli.ts";
+
+runCli(process.argv.slice(2)).catch((e: Error) => {
+  console.error("tokeneye:", e.message);
+  process.exit(1);
+});
