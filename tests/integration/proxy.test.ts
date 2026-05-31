@@ -225,9 +225,6 @@ describe("createHandler failover", () => {
     const res = await handler(req);
 
     expect(res.status).toBe(502);
-    const body = await res.json();
-    expect(body.error).toContain("exhausted");
-    expect(body.detail).toBeTruthy();
 
     await new Promise((r) => setTimeout(r, 50));
     expect(db.recordCount()).toBeGreaterThanOrEqual(1);

@@ -58,3 +58,98 @@ jobs:
 
       - name: Verify build output
         run: test -f frontend/dist/index.html
+
+  audit-deps:
+    name: Audit Dependencies
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Generate package-lock.json for audit
+        run: npm install --package-lock-only --production
+
+      - name: Audit for known vulnerabilities
+        run: npm audit --production --audit-level=moderate
+
+  secret-scan:
+    name: Secret Scanning
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for accidental API key patterns
+        run: |
+          set -e
+          PATTERNS=(
+            "sk-[a-zA-Z0-9]{20,}"
+            "Bearer [a-zA-Z0-9_-]{20,}"
+            "AIza[0-9A-Za-z_-]{35}"
+            "[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+          )
+
+          FOUND=0
+          for PATTERN in "${PATTERNS[@]}"; do
+            MATCHES=$(grep -rIn --exclude-dir={.git,node_modules,dist,.next,coverage,out} --exclude='*.lock' "$PATTERN" . || true)
+            if [ -n "$MATCHES" ]; then
+              echo "::error::SECRET SCAN: Found potential API key matching pattern '${PATTERN}'"
+              echo "$MATCHES"
+              FOUND=1
+            fi
+          done
+
+          if [ $FOUND -eq 1 ]; then
+            echo ""
+            echo "::error::Secret scan failed — remove exposed credentials from committed files."
+            exit 1
+          fi
+
+          echo "No secrets detected."
+
+  security-lint:
+    name: Security Linting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Scan for security anti-patterns
+        run: |
+          set -e
+
+          ANTI_PATTERNS=(
+            "eval("
+            "dangerouslySetInnerHTML"
+            "as any"
+            "@ts-ignore"
+          )
+
+          SOURCE_DIRS=("src/" "frontend/src/")
+          FOUND=0
+
+          for DIR in "${SOURCE_DIRS[@]}"; do
+            if [ ! -d "$DIR" ]; then
+              continue
+            fi
+
+            for AP in "${ANTI_PATTERNS[@]}"; do
+              MATCHES=$(grep -rn --include='*.ts' --include='*.tsx' --include='*.js' --include='*.jsx' "$AP" "$DIR" || true)
+
+              if [ -n "$MATCHES" ]; then
+                echo "::warning::SECURITY LINT: Found '${AP}' in source files"
+                echo "$MATCHES"
+                echo ""
+                FOUND=1
+              fi
+            done
+          done
+
+          if [ $FOUND -eq 1 ]; then
+            echo ""
+            echo "::error::Security lint failed — review flagged anti-patterns and fix or annotate."
+            exit 1
+          fi
+
+          echo "No security anti-patterns found."

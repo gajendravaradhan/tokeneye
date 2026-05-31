@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import type { KeyEntry, ProxyConfig, ProxyMode } from "./types.ts";
+import { validateKeyFormat } from "./security.ts";
 
 export const DEFAULT_FAILOVER_STATUS = [401, 403, 408, 409, 425, 429, 500, 502, 503, 504];
 
@@ -76,6 +77,7 @@ export function save(path: string, c: ProxyConfig): void {
 }
 
 export function addKey(c: ProxyConfig, label: string, key: string): ProxyConfig {
+  validateKeyFormat(key, label);
   if (c.keys.some((k) => k.label === label)) throw new Error(`label '${label}' already exists`);
   const keys: KeyEntry[] = [...c.keys, { label, key }];
   const primary = c.primary || label;

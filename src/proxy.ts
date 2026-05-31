@@ -3,6 +3,9 @@ import { orderKeys, shouldFailover } from "./balancer.ts";
 import { load, assertServable } from "./config.ts";
 import { extractRequestMeta, extractUsageFromResponse, calculateCost } from "./collector.ts";
 import Database from "./db.ts";
+import {
+  validateRequestBodySize,
+} from "./security.ts";
 
 const HOP_BY_HOP = new Set([
   "content-encoding",
@@ -102,6 +105,7 @@ export function createHandler(
 
     let lastStatus = 0;
     let lastError = "";
+    let lastLabel = orderedKeys[0]?.label ?? "unknown";
 
     for (let i = 0; i < orderedKeys.length; i++) {
       const entry = orderedKeys[i]!;
@@ -116,6 +120,7 @@ export function createHandler(
         upstreamHeaders["authorization"] = `Bearer ${entry.key}`;
 
         const bodyText = await req.clone().text().catch(() => "");
+        validateRequestBodySize(bodyText.length);
         const upstreamRes = await fetcher(upstreamUrl, {
           method: req.method,
           headers: upstreamHeaders,
@@ -172,7 +177,7 @@ export function createHandler(
 
     db.insertMetrics({
       timestamp: new Date().toISOString(),
-      subscription: orderedKeys[orderedKeys.length - 1]?.label ?? "unknown",
+      subscription: lastLabel,
       model: reqMeta.model,
       promptTokens: reqMeta.estimatedInputTokens ?? 0,
       completionTokens: 0,
@@ -185,7 +190,7 @@ export function createHandler(
       error: lastError,
     });
 
-    return new Response(JSON.stringify({ error: "All upstream keys exhausted", detail: lastError }), {
+    return new Response(JSON.stringify({ error: "All upstream keys exhausted" }), {
       status: 502,
       headers: { "content-type": "application/json" },
     });

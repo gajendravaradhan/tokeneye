@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { createApiHandlerFromPath } from "./api.ts";
+import { isSafePath, applySecurityHeaders } from "./security.ts";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -177,18 +178,19 @@ setInterval(refresh,30000);
 </body>
 </html>`;
 
-function serveStaticFile(filePath: string): Response {
+function serveStaticFile(filePath: string, rootDir: string): Response {
+  if (!isSafePath(filePath, rootDir)) return new Response("Forbidden", { status: 403 });
   if (!existsSync(filePath)) return new Response("Not found", { status: 404 });
 
   const content = readFileSync(filePath);
   const mimeType = getMimeType(filePath);
-
-  return new Response(content, {
-    headers: {
-      "Content-Type": mimeType,
-      "Cache-Control": "public, max-age=3600",
-    },
+  const headers = new Headers({
+    "Content-Type": mimeType,
+    "Cache-Control": "public, max-age=3600",
   });
+  applySecurityHeaders(headers, null);
+
+  return new Response(content, { headers });
 }
 
 export async function serveDashboard(
@@ -215,15 +217,15 @@ export async function serveDashboard(
         const filePath = join(frontendDist, pathname === "/" ? "index.html" : pathname);
 
         if (existsSync(filePath) && !filePath.endsWith("/")) {
-          return serveStaticFile(filePath);
+          return serveStaticFile(filePath, frontendDist);
         }
 
-        return serveStaticFile(join(frontendDist, "index.html"));
+        return serveStaticFile(join(frontendDist, "index.html"), frontendDist);
       }
 
-      return new Response(INLINE_DASHBOARD, {
-        headers: { "Content-Type": "text/html; charset=utf-8" },
-      });
+      const headers = new Headers({ "Content-Type": "text/html; charset=utf-8" });
+      applySecurityHeaders(headers, null);
+      return new Response(INLINE_DASHBOARD, { headers });
     },
   });
 

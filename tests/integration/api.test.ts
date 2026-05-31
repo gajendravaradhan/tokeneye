@@ -79,19 +79,19 @@ describe("API handler", () => {
   });
 
   test("OPTIONS returns CORS headers", () => {
-    const req = new Request("http://localhost/api/health", { method: "OPTIONS" });
+    const req = new Request("http://localhost/api/health", { method: "OPTIONS", headers: { origin: "http://localhost:3000" } });
     const res = handler(req);
     expect(res.status).toBe(204);
-    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("access-control-allow-origin")).toBe("http://localhost:3000");
     expect(res.headers.get("access-control-allow-methods")).toContain("GET");
     expect(res.headers.get("access-control-allow-headers")).toContain("Content-Type");
   });
 
   test("GET /api/health returns uptime and recordCount", async () => {
-    const req = new Request("http://localhost/api/health");
+    const req = new Request("http://localhost/api/health", { headers: { origin: "http://localhost:3000" } });
     const res = handler(req);
     expect(res.status).toBe(200);
-    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("access-control-allow-origin")).toBe("http://localhost:3000");
 
     const body = await jsonBody(res);
     expect(body.ok).toBe(true);
@@ -318,8 +318,8 @@ describe("API handler", () => {
   });
 
   test("CORS headers on error responses", () => {
-    const req = new Request("http://localhost/api/unknown");
+    const req = new Request("http://localhost/api/unknown", { headers: { origin: "http://localhost:3000" } });
     const res = handler(req);
-    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("access-control-allow-origin")).toBe("http://localhost:3000");
   });
 });

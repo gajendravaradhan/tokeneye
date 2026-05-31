@@ -98,14 +98,14 @@ describe("dashboard e2e", () => {
   });
 
   test("CORS headers present on API responses through dashboard", async () => {
-    const res = await fetch(`${BASE_URL}/api/overview?dateRange=all`);
-    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    const res = await fetch(`${BASE_URL}/api/overview?dateRange=all`, { headers: { origin: "http://localhost:3000" } });
+    expect(res.headers.get("access-control-allow-origin")).toBe("http://localhost:3000");
   });
 
   test("OPTIONS preflight returns CORS headers through dashboard", async () => {
-    const res = await fetch(`${BASE_URL}/api/health`, { method: "OPTIONS" });
+    const res = await fetch(`${BASE_URL}/api/health`, { method: "OPTIONS", headers: { origin: "http://localhost:3000" } });
     expect(res.status).toBe(204);
-    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    expect(res.headers.get("access-control-allow-origin")).toBe("http://localhost:3000");
   });
 
   test("dashboard HTML page returns valid HTML", async () => {

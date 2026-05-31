@@ -10,11 +10,7 @@ import {
   defaultConfig,
 } from "./config.ts";
 import type { ProxyMode } from "./types.ts";
-
-function maskKey(key: string): string {
-  if (key.length <= 8) return "***";
-  return `${key.slice(0, 4)}...${key.slice(-4)}`;
-}
+import { maskKey } from "./security.ts";
 
 function printHelp(): void {
   console.log(`

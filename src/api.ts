@@ -10,6 +10,13 @@ import type {
   TimelinePoint,
   TopConsumer,
 } from "./types.ts";
+import {
+  sanitizeErrorMessage,
+  applySecurityHeaders,
+  getAllowedOrigin,
+  RateLimiter,
+  validateQueryParam,
+} from "./security.ts";
 
 export interface Database {
   getOverview(filters: QueryFilters): OverviewStats;
@@ -29,59 +36,79 @@ export interface Database {
   recordCount(): number;
 }
 
-const CORS_HEADERS: Record<string, string> = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
-  "Access-Control-Max-Age": "86400",
-};
+const VALID_DATE_RANGES = new Set(["session", "hour", "day", "week", "month", "year", "all", "custom"]);
+const VALID_STATUS = new Set(["all", "success", "error"]);
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})?)?$/;
 
-function json(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: {
-      "Content-Type": "application/json",
-      ...CORS_HEADERS,
-    },
-  });
+function json(body: unknown, status: number, corsOrigin: string | null): Response {
+  const h = new Headers();
+  h.set("Content-Type", "application/json");
+  applySecurityHeaders(h, corsOrigin);
+  return new Response(JSON.stringify(body), { status, headers: h });
 }
 
 function parseArrayParam(value: string | null): string[] | undefined {
   if (!value) return undefined;
-  return value.split(",").map((s) => s.trim()).filter(Boolean);
+  const parts = value.split(",").map((s) => s.trim()).filter(Boolean);
+  if (parts.length > 50) throw new Error("Too many filter values (max 50)");
+  for (const p of parts) {
+    if (p.length > 200) throw new Error("Filter value too long");
+  }
+  return parts;
 }
 
 function parseFilters(url: URL): QueryFilters {
-  const dateRange = (url.searchParams.get("dateRange") || "day") as QueryFilters["dateRange"];
-  const customFrom = url.searchParams.get("customFrom");
-  const customTo = url.searchParams.get("customTo");
+  const dateRange = validateQueryParam(url.searchParams.get("dateRange")) || "day";
+  if (!VALID_DATE_RANGES.has(dateRange)) throw new Error(`Invalid dateRange: ${dateRange}`);
+
+  const customFrom = validateQueryParam(url.searchParams.get("customFrom"));
+  const customTo = validateQueryParam(url.searchParams.get("customTo"));
   const models = parseArrayParam(url.searchParams.get("models"));
   const subscriptions = parseArrayParam(url.searchParams.get("subscriptions"));
   const projects = parseArrayParam(url.searchParams.get("projects"));
   const agents = parseArrayParam(url.searchParams.get("agents"));
-  const status = (url.searchParams.get("status") || "all") as QueryFilters["status"];
+  const status = validateQueryParam(url.searchParams.get("status")) || "all";
+  if (!VALID_STATUS.has(status)) throw new Error(`Invalid status: ${status}`);
 
-  const filters: QueryFilters = { dateRange };
+  const filters: QueryFilters = { dateRange: dateRange as QueryFilters["dateRange"] };
 
-  if (customFrom && customTo) {
+  if (dateRange === "custom" && customFrom && customTo) {
+    if (!ISO_DATE_RE.test(customFrom) || !ISO_DATE_RE.test(customTo)) {
+      throw new Error("customFrom and customTo must be ISO-8601 dates");
+    }
     filters.customRange = { from: customFrom, to: customTo };
   }
   if (models) filters.models = models;
   if (subscriptions) filters.subscriptions = subscriptions;
   if (projects) filters.projects = projects;
   if (agents) filters.agents = agents;
-  if (status) filters.status = status;
+  if (status) filters.status = status as QueryFilters["status"];
 
   return filters;
 }
 
-function createRouter(db: Database, startTime: number) {
+function createRouter(db: Database, startTime: number, rateLimiter: RateLimiter) {
   return function handler(req: Request): Response {
+    const url = new URL(req.url);
+    const requestOrigin = req.headers.get("origin");
+    const corsOrigin = getAllowedOrigin(requestOrigin);
+
     if (req.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: CORS_HEADERS });
+      const h = new Headers();
+      applySecurityHeaders(h, corsOrigin);
+      if (corsOrigin) {
+        h.set("Access-Control-Allow-Methods", "GET, OPTIONS");
+        h.set("Access-Control-Allow-Headers", "Content-Type");
+        h.set("Access-Control-Max-Age", "86400");
+      }
+      return new Response(null, { status: 204, headers: h });
     }
 
-    const url = new URL(req.url);
+    const clientIp = req.headers.get("x-forwarded-for") || "127.0.0.1";
+    if (!rateLimiter.allow(clientIp)) {
+      return json({ error: "Too many requests" }, 429, corsOrigin);
+    }
+
     const path = url.pathname;
 
     try {
@@ -91,35 +118,35 @@ function createRouter(db: Database, startTime: number) {
             ok: true,
             uptime: Math.floor((Date.now() - startTime) / 1000),
             recordCount: db.recordCount(),
-          });
+          }, 200, corsOrigin);
         }
 
         case "/api/overview": {
-          return json(db.getOverview(parseFilters(url)));
+          return json(db.getOverview(parseFilters(url)), 200, corsOrigin);
         }
 
         case "/api/models": {
-          return json(db.getModelBreakdown(parseFilters(url)));
+          return json(db.getModelBreakdown(parseFilters(url)), 200, corsOrigin);
         }
 
         case "/api/subscriptions": {
-          return json(db.getSubscriptionBreakdown(parseFilters(url)));
+          return json(db.getSubscriptionBreakdown(parseFilters(url)), 200, corsOrigin);
         }
 
         case "/api/projects": {
-          return json(db.getProjectBreakdown(parseFilters(url)));
+          return json(db.getProjectBreakdown(parseFilters(url)), 200, corsOrigin);
         }
 
         case "/api/agents": {
-          return json(db.getAgentBreakdown(parseFilters(url)));
+          return json(db.getAgentBreakdown(parseFilters(url)), 200, corsOrigin);
         }
 
         case "/api/timeline": {
-          return json(db.getTimeline(parseFilters(url)));
+          return json(db.getTimeline(parseFilters(url)), 200, corsOrigin);
         }
 
         case "/api/heatmap": {
-          return json(db.getHeatmap(parseFilters(url)));
+          return json(db.getHeatmap(parseFilters(url)), 200, corsOrigin);
         }
 
         case "/api/top-consumers": {
@@ -128,7 +155,7 @@ function createRouter(db: Database, startTime: number) {
             Math.max(parseInt(url.searchParams.get("limit") || "10", 10) || 10, 1),
             100,
           );
-          return json(db.getTopConsumers(filters, limit));
+          return json(db.getTopConsumers(filters, limit), 200, corsOrigin);
         }
 
         case "/api/full": {
@@ -149,19 +176,19 @@ function createRouter(db: Database, startTime: number) {
             topConsumers: db.getTopConsumers(filters, limit),
             filters,
           };
-          return json(data);
+          return json(data, 200, corsOrigin);
         }
 
         case "/api/filters": {
-          return json(db.getFilterOptions());
+          return json(db.getFilterOptions(), 200, corsOrigin);
         }
 
         default:
-          return json({ error: "Not found" }, 404);
+          return json({ error: "Not found" }, 404, corsOrigin);
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Internal server error";
-      return json({ error: message }, 500);
+      const message = sanitizeErrorMessage(err);
+      return json({ error: message }, 500, corsOrigin);
     }
   };
 }
@@ -169,14 +196,15 @@ function createRouter(db: Database, startTime: number) {
 export function createApiHandler(
   db: Database,
 ): (req: Request) => Response {
-  return createRouter(db, Date.now());
+  const rateLimiter = new RateLimiter();
+  setInterval(() => rateLimiter.cleanup(), 60_000);
+  return createRouter(db, Date.now(), rateLimiter);
 }
 
 export async function createApiHandlerFromPath(
   dbPath?: string,
 ): Promise<(req: Request) => Response> {
-  // @ts-expect-error db.ts may not exist yet — dynamic import at runtime
-  const { Database: DbClass } = await import("./db.ts");
-  const db = new DbClass(dbPath);
+  const { default: DbClass } = await import("./db.ts");
+  const db = new DbClass(dbPath ?? ":memory:");
   return createApiHandler(db);
 }
