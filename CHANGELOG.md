@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.1.0](https://github.com/gajendravaradhan/tokeneye/compare/tokeneye-v1.0.0...tokeneye-v1.1.0) (2026-05-31)
+
+
+### Features
+
+* initial release of TokenEye v1.0.0 ([5e790c8](https://github.com/gajendravaradhan/tokeneye/commit/5e790c8dad6b9faf5a7f00131eebdea2231363bc))
+* security hardening v1.1.0 — safe keys, CORS, rate limiting ([cf15a46](https://github.com/gajendravaradhan/tokeneye/commit/cf15a4627ed4f6cffdea11c57a88e506764c219b))
+
+
+### Bug Fixes
+
+* remove x-tokeneye-key header, restrict /__health, fix help text ([ddaeb2d](https://github.com/gajendravaradhan/tokeneye/commit/ddaeb2d006fe797af259f7c7c8c33dede1cb0afd))
+
 ## [1.1.0] - 2026-05-31
 
 ### Security

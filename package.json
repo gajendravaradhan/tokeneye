@@ -1,6 +1,6 @@
 {
   "name": "tokeneye",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Model usage analytics dashboard for OpenCode Zen subscriptions — track tokens, models, and costs across all your API keys",
   "type": "module",
   "bin": {
