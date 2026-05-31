@@ -488,6 +488,20 @@ export default class Database {
     return row?.cnt ?? 0;
   }
 
+  getFilterOptions(): {
+    models: string[];
+    subscriptions: string[];
+    projects: string[];
+    agents: string[];
+  } {
+    return {
+      models: this.getDistinctValues("model"),
+      subscriptions: this.getDistinctValues("subscription"),
+      projects: this.getDistinctValues("project"),
+      agents: this.getDistinctValues("agent"),
+    };
+  }
+
   close(): void {
     this.db.close();
   }

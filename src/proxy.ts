@@ -143,6 +143,22 @@ export function createHandler(
 
         const stripped = stripResponseHeaders(upstreamRes.headers);
         stripped.set("x-tokeneye-key", entry.label);
+
+        db.insertMetrics({
+          timestamp: new Date().toISOString(),
+          subscription: entry.label,
+          model: reqMeta.model,
+          promptTokens: reqMeta.estimatedInputTokens ?? 0,
+          completionTokens: 0,
+          totalTokens: reqMeta.estimatedInputTokens ?? 0,
+          latencyMs: Date.now() - startTime,
+          status: upstreamRes.status,
+          stream: reqMeta.stream,
+          project: reqMeta.project,
+          agent: reqMeta.agent,
+          error: `HTTP ${upstreamRes.status}`,
+        });
+
         return new Response(upstreamRes.body, {
           status: upstreamRes.status,
           statusText: upstreamRes.statusText,
