@@ -182,20 +182,24 @@ export function createHandler(
 export function startServer(
   cfgPath?: string,
   dbPath?: string,
+  opts?: { port?: number; host?: string },
 ): { server: ReturnType<typeof Bun.serve>; db: Database } {
   const config = load(cfgPath);
   assertServable(config);
+
+  const port = opts?.port ?? config.port;
+  const host = opts?.host ?? config.host;
 
   const db = new Database(dbPath ?? config.dbPath ?? ":memory:");
 
   const handler = createHandler(() => config, db);
 
   const server = Bun.serve({
-    port: config.port,
-    hostname: config.host,
+    port,
+    hostname: host,
     fetch: handler,
   });
 
-  console.log(`tokeneye proxy listening on http://${config.host}:${config.port}`);
+  console.log(`tokeneye proxy listening on http://${host}:${port}`);
   return { server, db };
 }

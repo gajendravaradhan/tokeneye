@@ -56,11 +56,11 @@ export async function startServer(options?: {
   if (!args.dashboardOnly) {
     try {
       const { startServer: start } = await import("./proxy.ts");
-      start(configPath, dbPath);
+      start(configPath, dbPath, { port: proxyPortArg });
       const proxyPort = proxyPortArg ?? cfg.port;
       console.log(`  Proxy     → http://${cfg.host}:${proxyPort}`);
-    } catch {
-      console.log("  Proxy     not started (proxy.ts missing)");
+    } catch (err) {
+      console.log(`  Proxy     not started: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -94,8 +94,10 @@ async function main(argv: string[]) {
   });
 }
 
-const argv = process.argv.slice(2);
-main(argv).catch((err) => {
-  console.error("tokeneye:", err instanceof Error ? err.message : err);
-  process.exit(1);
-});
+if (import.meta.main) {
+  const argv = process.argv.slice(2);
+  main(argv).catch((err) => {
+    console.error("tokeneye:", err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}

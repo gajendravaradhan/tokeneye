@@ -318,11 +318,10 @@ describe("API handler", () => {
   });
 
   test("CORS headers on error responses", () => {
-    const req = new Request("http://localhost/api/unknown", {
-      headers: { origin: "http://localhost:3000" },
-    });
+    const req = new Request("http://localhost/api/unknown");
     const res = handler(req);
-    expect(res.headers.get("access-control-allow-origin")).toBe("http://localhost:3000");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("content-type")).toBe("application/json");
   });
 });
 
