@@ -6,9 +6,22 @@ export interface KeyEntry {
   key: string;
 }
 
+/** Per-provider configuration */
+export interface ProviderConfig {
+  upstream: string;
+  basePath: string;
+  mode: ProxyMode;
+  primary: string;
+  failover_status: number[];
+  keys: KeyEntry[];
+}
+
 export type ProxyMode = "failover" | "balance";
 
 export interface ProxyConfig {
+  /** Multi-provider map (new format) */
+  providers?: Record<string, ProviderConfig>;
+  /** Flattened fields — used when providers is absent (old format) or as defaults */
   upstream: string;
   port: number;
   host: string;
@@ -57,6 +70,8 @@ export interface MetricsRecord {
   timestamp: string;
   /** Subscription key label that served this request */
   subscription: string;
+  /** Provider name (e.g. "opencode-go", "anthropic", "openai") */
+  provider?: string;
   /** Model ID from response, e.g. "deepseek/deepseek-v4-pro" */
   model: string;
   /** Prompt tokens consumed */
@@ -106,6 +121,7 @@ export interface QueryFilters {
   customRange?: CustomDateRange;
   models?: string[];
   subscriptions?: string[];
+  providers?: string[];
   projects?: string[];
   agents?: string[];
   status?: "success" | "error" | "all";
@@ -137,6 +153,7 @@ export interface ModelBreakdown {
 
 export interface SubscriptionBreakdown {
   subscription: string;
+  provider?: string;
   requests: number;
   totalTokens: number;
   cost: number;
@@ -176,7 +193,7 @@ export interface HourlyHeatmap {
 
 export interface TopConsumer {
   name: string;
-  type: "model" | "agent" | "project" | "subscription";
+  type: "model" | "agent" | "project" | "subscription" | "provider";
   tokens: number;
   cost: number;
   requests: number;
