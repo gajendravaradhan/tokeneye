@@ -8,6 +8,11 @@ import {
   setPrimary,
   setMode,
   defaultConfig,
+  normalizeConfig,
+  addProvider,
+  removeProvider,
+  getProviders,
+  getProvider,
 } from "./config.ts";
 import type { ProxyMode } from "./types.ts";
 import { maskKey } from "./security.ts";
@@ -24,12 +29,16 @@ COMMANDS:
   start                         Start proxy + dashboard servers
   status                        Check proxy health
 
-  keys add <label> <key>        Add a subscription API key
-  keys rm <label>               Remove a key
-  keys list                     List all keys (values masked)
+  provider add <name> <upstream> <basePath>  Add a provider
+  provider rm <name>                          Remove a provider
+  provider list                               List all providers
 
-  set-primary <label>           Set primary subscription (failover mode)
-  mode <failover|balance>       Switch balancing strategy
+  keys add [provider] <label> <key>  Add a subscription API key
+  keys rm [provider] <label>          Remove a key
+  keys list [provider]                List all keys (values masked)
+
+  set-primary [provider] <label>      Set primary subscription (failover mode)
+  mode [provider] <failover|balance>  Switch balancing strategy
 
   dashboard                     Start only the dashboard server
   proxy                         Start only the proxy server
@@ -45,20 +54,18 @@ OPTIONS (for start/proxy/dashboard):
 
 EXAMPLES:
   tokeneye init
+  tokeneye provider add anthropic https://api.anthropic.com /v1
   tokeneye keys add pro <your-api-key>
-  tokeneye keys add personal <your-api-key>
+  tokeneye keys add anthropic default sk-ant-...
   tokeneye start
-  tokeneye dashboard --port 3000
 `);
 }
 
 async function cmdInit(): Promise<void> {
   const path = configPath();
   try {
-    const existing = load(path);
+    load(path);
     console.log(`Config already exists at ${path}`);
-    console.log(`  Primary: ${existing.primary || "(none)"}`);
-    console.log(`  Keys: ${existing.keys.length}`);
   } catch {
     save(path, defaultConfig());
     console.log(`Config created at ${path}`);
@@ -66,21 +73,28 @@ async function cmdInit(): Promise<void> {
   }
 }
 
-function cmdKeysList(): void {
-  const cfg = load();
-  if (cfg.keys.length === 0) {
-    console.log("No keys configured. Add one with: tokeneye keys add <label> <key>");
+function cmdKeysList(providerName?: string): void {
+  const cfg = normalizeConfig(load());
+  if (providerName) {
+    const p = getProvider(cfg, providerName);
+    console.log(`Provider: ${providerName} | Mode: ${p.mode} | Primary: ${p.primary}`);
+    for (const k of p.keys) {
+      const marker = k.label === p.primary ? " *" : "  ";
+      console.log(`${marker}${k.label}: ${maskKey(k.key)}`);
+    }
     return;
   }
-  console.log(`Mode: ${cfg.mode} | Primary: ${cfg.primary}`);
-  console.log("");
-  for (const k of cfg.keys) {
-    const marker = k.label === cfg.primary ? " *" : "  ";
-    console.log(`${marker}${k.label}: ${maskKey(k.key)}`);
+  for (const name of getProviders(cfg)) {
+    const p = getProvider(cfg, name);
+    console.log(`${name}: ${p.keys.length} keys (${p.mode}, primary=${p.primary || "none"})`);
+    for (const k of p.keys) {
+      const marker = k.label === p.primary ? " *" : "  ";
+      console.log(`${marker}${k.label}: ${maskKey(k.key)}`);
+    }
   }
 }
 
-function cmdKeysAdd(label: string, key: string): void {
+function cmdKeysAdd(label: string, key: string, providerName = "opencode-go"): void {
   const path = configPath();
   let cfg: ReturnType<typeof load>;
   try {
@@ -88,45 +102,49 @@ function cmdKeysAdd(label: string, key: string): void {
   } catch {
     cfg = defaultConfig();
   }
-  const updated = addKey(cfg, label, key);
+  const updated = addKey(cfg, label, key, providerName);
   save(path, updated);
-  console.log(`Key '${label}' added. Primary is now '${updated.primary}'.`);
+  const p = getProvider(updated, providerName);
+  console.log(`Key '${label}' added to '${providerName}'. Primary is now '${p.primary}'.`);
 }
 
-function cmdKeysRm(label: string): void {
+function cmdKeysRm(label: string, providerName = "opencode-go"): void {
   const path = configPath();
   const cfg = load(path);
-  const updated = removeKey(cfg, label);
+  const updated = removeKey(cfg, label, providerName);
   save(path, updated);
-  console.log(`Key '${label}' removed. Primary is now '${updated.primary}'.`);
+  console.log(`Key '${label}' removed from '${providerName}'.`);
 }
 
-function cmdSetPrimary(label: string): void {
+function cmdSetPrimary(label: string, providerName = "opencode-go"): void {
   const path = configPath();
   const cfg = load(path);
-  const updated = setPrimary(cfg, label);
+  const updated = setPrimary(cfg, label, providerName);
   save(path, updated);
-  console.log(`Primary set to '${label}'.`);
+  console.log(`Primary for '${providerName}' set to '${label}'.`);
 }
 
-function cmdSetMode(mode: string): void {
+function cmdSetMode(mode: string, providerName = "opencode-go"): void {
   const path = configPath();
   const cfg = load(path);
-  const updated = setMode(cfg, mode as ProxyMode);
+  const updated = setMode(cfg, mode as ProxyMode, providerName);
   save(path, updated);
-  console.log(`Mode set to '${mode}'.`);
+  console.log(`Mode for '${providerName}' set to '${mode}'.`);
 }
 
 async function cmdStatus(): Promise<void> {
-  const cfg = load();
+  const cfg = normalizeConfig(load());
   try {
     const res = await fetch(`http://${cfg.host}:${cfg.port}/__health`);
     const body = await res.json() as Record<string, unknown>;
     console.log(`Proxy: ${res.ok ? "RUNNING" : "UNHEALTHY"}`);
     console.log(`  URL: http://${cfg.host}:${cfg.port}`);
-    console.log(`  Primary: ${body.primary}`);
-    console.log(`  Mode: ${body.mode}`);
-    console.log(`  Keys: ${(body.keys as string[]).join(", ")}`);
+    if (body.providers) {
+      const providers = body.providers as Record<string, Record<string, unknown>>;
+      for (const [name, p] of Object.entries(providers)) {
+        console.log(`  ${name}: mode=${p.mode} primary=${p.primary} keys=${p.keyCount}`);
+      }
+    }
     if (body.recordCount !== undefined) {
       console.log(`  Metrics records: ${body.recordCount}`);
     }
@@ -169,34 +187,85 @@ export async function runCli(args: string[]): Promise<void> {
       await cmdInit();
       break;
 
+    case "provider": {
+      const sub = positionals[1];
+      if (sub === "list") {
+        const cfg = load();
+        for (const name of getProviders(cfg)) {
+          const p = getProvider(cfg, name);
+          console.log(`${name}: ${p.upstream}${p.basePath} (${p.keys.length} keys, ${p.mode})`);
+        }
+      } else if (sub === "add" && positionals[2] && positionals[3] && positionals[4]) {
+        const path = configPath();
+        let cfg: ReturnType<typeof load>;
+        try { cfg = load(path); } catch { cfg = defaultConfig(); }
+        const updated = addProvider(cfg, positionals[2], positionals[3], positionals[4]);
+        save(path, updated);
+        console.log(`Provider '${positionals[2]}' added.`);
+      } else if (sub === "rm" && positionals[2]) {
+        const path = configPath();
+        const cfg = load(path);
+        const updated = removeProvider(cfg, positionals[2]);
+        save(path, updated);
+        console.log(`Provider '${positionals[2]}' removed.`);
+      } else {
+        console.log("Usage: tokeneye provider <list|add <name> <upstream> <basePath>|rm <name>>");
+      }
+      break;
+    }
+
     case "keys": {
       const sub = positionals[1];
       if (sub === "list") {
-        cmdKeysList();
-      } else if (sub === "add" && positionals[2] && positionals[3]) {
-        cmdKeysAdd(positionals[2], positionals[3]);
-      } else if (sub === "rm" && positionals[2]) {
-        cmdKeysRm(positionals[2]);
+        cmdKeysList(positionals[2]);
+      } else if (sub === "add") {
+        if (positionals[2] && positionals[3] && positionals[4]) {
+          cmdKeysAdd(positionals[3], positionals[4], positionals[2]);
+        } else if (positionals[2] && positionals[3]) {
+          cmdKeysAdd(positionals[2], positionals[3]);
+        } else {
+          console.log("Usage: tokeneye keys add [provider] <label> <key>");
+        }
+      } else if (sub === "rm") {
+        if (positionals[2] && positionals[3]) {
+          cmdKeysRm(positionals[3], positionals[2]);
+        } else if (positionals[2]) {
+          cmdKeysRm(positionals[2]);
+        } else {
+          console.log("Usage: tokeneye keys rm [provider] <label>");
+        }
       } else {
-        console.log("Usage: tokeneye keys <list|add <label> <key>|rm <label>>");
+        console.log("Usage: tokeneye keys <list [provider]|add [provider] <label> <key>|rm [provider] <label>>");
       }
       break;
     }
 
     case "set-primary": {
-      if (!positionals[1]) {
-        console.log("Usage: tokeneye set-primary <label>");
-      } else {
+      if (positionals[1] && positionals[2]) {
+        cmdSetPrimary(positionals[2], positionals[1]);
+      } else if (positionals[1]) {
         cmdSetPrimary(positionals[1]);
+      } else {
+        console.log("Usage: tokeneye set-primary [provider] <label>");
       }
       break;
     }
 
     case "mode": {
-      if (!positionals[1] || (positionals[1] !== "failover" && positionals[1] !== "balance")) {
-        console.log("Usage: tokeneye mode <failover|balance>");
+      if (positionals[1] && positionals[2]) {
+        if (positionals[2] !== "failover" && positionals[2] !== "balance") {
+          console.log("Mode must be failover|balance");
+        } else {
+          cmdSetMode(positionals[2], positionals[1]);
+        }
+      } else if (positionals[1]) {
+        if (positionals[1] !== "failover" && positionals[1] !== "balance") {
+          console.log("Mode must be failover|balance");
+        } else {
+          cmdSetMode(positionals[1]);
+        }
       } else {
-        cmdSetMode(positionals[1]);
+        console.log("Usage: tokeneye mode [provider] <failover|balance>");
       }
       break;
     }

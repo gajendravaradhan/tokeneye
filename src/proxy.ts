@@ -1,6 +1,6 @@
-import type { ProxyConfig } from "./types.ts";
+import type { ProviderConfig, ProxyConfig } from "./types.ts";
 import { orderKeys, shouldFailover } from "./balancer.ts";
-import { load, assertServable } from "./config.ts";
+import { load, assertServable, normalizeConfig } from "./config.ts";
 import { extractRequestMeta, extractUsageFromResponse, calculateCost } from "./collector.ts";
 import Database from "./db.ts";
 import {
@@ -21,6 +21,23 @@ function stripResponseHeaders(headers: Headers): Headers {
   return out;
 }
 
+function matchProvider(config: ProxyConfig, pathname: string): { name: string; config: ProviderConfig } | null {
+  const cfg = normalizeConfig(config);
+  const providers = cfg.providers ?? {};
+  let bestMatch: { name: string; config: ProviderConfig } | null = null;
+  let bestLen = 0;
+  for (const [name, p] of Object.entries(providers)) {
+    const prefix = p.basePath.replace(/\/$/, "");
+    if (pathname === prefix || pathname.startsWith(prefix + "/")) {
+      if (prefix.length > bestLen) {
+        bestLen = prefix.length;
+        bestMatch = { name, config: p };
+      }
+    }
+  }
+  return bestMatch;
+}
+
 async function recordUsage(
   upstreamRes: Response,
   keyLabel: string,
@@ -28,10 +45,11 @@ async function recordUsage(
   startTime: number,
   status: number,
   db: Database,
+  providerName: string,
 ): Promise<void> {
   try {
     const cloned = upstreamRes.clone() as unknown as Response;
-    const { usage, model } = await extractUsageFromResponse(cloned, reqMeta);
+    const { usage, model } = await extractUsageFromResponse(cloned, reqMeta, providerName);
 
     const promptTokens = usage?.prompt_tokens ?? reqMeta.estimatedInputTokens ?? 0;
     const completionTokens = usage?.completion_tokens ?? 0;
@@ -41,6 +59,7 @@ async function recordUsage(
     db.insertMetrics({
       timestamp: new Date().toISOString(),
       subscription: keyLabel,
+      provider: providerName,
       model: model ?? reqMeta.model,
       promptTokens,
       completionTokens,
@@ -56,6 +75,7 @@ async function recordUsage(
     db.insertMetrics({
       timestamp: new Date().toISOString(),
       subscription: keyLabel,
+      provider: providerName,
       model: reqMeta.model,
       promptTokens: reqMeta.estimatedInputTokens ?? 0,
       completionTokens: 0,
@@ -75,33 +95,47 @@ export function createHandler(
   opts?: { fetchImpl?: typeof fetch },
 ): (req: Request) => Promise<Response> {
   const fetcher = opts?.fetchImpl ?? fetch;
+
   let cursor = 0;
 
   return async (req: Request): Promise<Response> => {
     const url = new URL(req.url);
 
+    // Health check
     if (url.pathname === "/__health") {
-      const config = loadState();
+      const config = normalizeConfig(loadState());
+      const providers = config.providers ?? {};
+      const providerStatus: Record<string, unknown> = {};
+      for (const [name, p] of Object.entries(providers)) {
+        providerStatus[name] = { mode: p.mode, primary: p.primary, keyCount: p.keys.length };
+      }
       return new Response(
-        JSON.stringify({
-          ok: true,
-          primary: config.primary,
-          mode: config.mode,
-          keyCount: config.keys.length,
-          recordCount: db.recordCount(),
-        }),
+        JSON.stringify({ ok: true, providers: providerStatus, recordCount: db.recordCount() }),
         { headers: { "content-type": "application/json" } },
       );
     }
 
+    // Provider routing
     const config = loadState();
-    assertServable(config);
+    const match = matchProvider(config, url.pathname);
+    if (!match) {
+      return new Response(JSON.stringify({ error: "no provider matches path" }), {
+        status: 404,
+        headers: { "content-type": "application/json" },
+      });
+    }
 
+    const { name: providerName, config: providerCfg } = match;
     const startTime = Date.now();
-    const orderedKeys = orderKeys(config.keys, config.primary, config.mode, cursor++);
-    const failoverSet = new Set(config.failover_status);
+    const orderedKeys = orderKeys(providerCfg.keys, providerCfg.primary, providerCfg.mode, cursor++);
+    const failoverSet = new Set(providerCfg.failover_status);
 
     const reqMeta = await extractRequestMeta(req.clone() as unknown as Request);
+
+    // Strip provider prefix from path for upstream
+    const strippedPath = url.pathname.slice(providerCfg.basePath.length) || "/";
+    const upstreamBase = providerCfg.upstream.replace(/\/$/, "");
+    const upstreamUrl = `${upstreamBase}${strippedPath}${url.search}`;
 
     let lastStatus = 0;
     let lastError = "";
@@ -112,7 +146,6 @@ export function createHandler(
       const isLast = i === orderedKeys.length - 1;
 
       try {
-        const upstreamUrl = `${config.upstream.replace(/\/$/, "")}${url.pathname}${url.search}`;
         const upstreamHeaders: Record<string, string> = {};
         req.headers.forEach((value, key) => {
           if (key.toLowerCase() !== "host") upstreamHeaders[key] = value;
@@ -129,7 +162,7 @@ export function createHandler(
         lastStatus = upstreamRes.status;
 
         if (upstreamRes.ok) {
-          recordUsage(upstreamRes as unknown as Response, entry.label, reqMeta, startTime, upstreamRes.status, db).catch(() => {});
+          recordUsage(upstreamRes as unknown as Response, entry.label, reqMeta, startTime, upstreamRes.status, db, providerName).catch(() => {});
 
           const stripped = stripResponseHeaders(upstreamRes.headers);
           return new Response(upstreamRes.body, {
@@ -160,6 +193,7 @@ export function createHandler(
     db.insertMetrics({
       timestamp: new Date().toISOString(),
       subscription: lastLabel,
+      provider: providerName,
       model: reqMeta.model,
       promptTokens: reqMeta.estimatedInputTokens ?? 0,
       completionTokens: 0,
@@ -184,8 +218,7 @@ export function startServer(
   dbPath?: string,
   opts?: { port?: number; host?: string },
 ): { server: ReturnType<typeof Bun.serve>; db: Database } {
-  const config = load(cfgPath);
-  assertServable(config);
+  const config = normalizeConfig(load(cfgPath));
 
   const port = opts?.port ?? config.port;
   const host = opts?.host ?? config.host;

@@ -27,6 +27,7 @@ export interface Database {
   getTimeline(filters: QueryFilters): TimelinePoint[];
   getHeatmap(filters: QueryFilters): HourlyHeatmap[];
   getTopConsumers(filters: QueryFilters, limit: number): TopConsumer[];
+  getProviderBreakdown(filters: QueryFilters): { provider: string; requests: number; totalTokens: number; cost: number }[];
   getFilterOptions(): {
     models: string[];
     subscriptions: string[];
@@ -67,6 +68,7 @@ function parseFilters(url: URL): QueryFilters {
   const subscriptions = parseArrayParam(url.searchParams.get("subscriptions"));
   const projects = parseArrayParam(url.searchParams.get("projects"));
   const agents = parseArrayParam(url.searchParams.get("agents"));
+  const providers = parseArrayParam(url.searchParams.get("providers"));
   const status = validateQueryParam(url.searchParams.get("status")) || "all";
   if (!VALID_STATUS.has(status)) throw new Error(`Invalid status: ${status}`);
 
@@ -82,6 +84,7 @@ function parseFilters(url: URL): QueryFilters {
   if (subscriptions) filters.subscriptions = subscriptions;
   if (projects) filters.projects = projects;
   if (agents) filters.agents = agents;
+  if (providers) filters.providers = providers;
   if (status) filters.status = status as QueryFilters["status"];
 
   return filters;
@@ -131,6 +134,10 @@ function createRouter(db: Database, startTime: number, rateLimiter: RateLimiter)
 
         case "/api/subscriptions": {
           return json(db.getSubscriptionBreakdown(parseFilters(url)), 200, corsOrigin);
+        }
+
+        case "/api/providers": {
+          return json(db.getProviderBreakdown(parseFilters(url)), 200, corsOrigin);
         }
 
         case "/api/projects": {

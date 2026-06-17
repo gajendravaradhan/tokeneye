@@ -18,6 +18,7 @@ interface MetricsRow {
   id: number;
   timestamp: string;
   subscription: string;
+  provider: string;
   model: string;
   prompt_tokens: number;
   completion_tokens: number;
@@ -38,6 +39,7 @@ CREATE TABLE IF NOT EXISTS metrics (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   timestamp TEXT NOT NULL,
   subscription TEXT NOT NULL,
+  provider TEXT NOT NULL DEFAULT 'opencode-go',
   model TEXT NOT NULL,
   prompt_tokens INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
@@ -58,9 +60,14 @@ CREATE INDEX IF NOT EXISTS idx_metrics_model ON metrics(model);
 CREATE INDEX IF NOT EXISTS idx_metrics_subscription ON metrics(subscription);
 CREATE INDEX IF NOT EXISTS idx_metrics_project ON metrics(project);
 CREATE INDEX IF NOT EXISTS idx_metrics_agent ON metrics(agent);
+CREATE INDEX IF NOT EXISTS idx_metrics_provider ON metrics(provider);
 `;
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+const MIGRATIONS = [
+  `ALTER TABLE metrics ADD COLUMN provider TEXT NOT NULL DEFAULT 'opencode-go'`,
+];
 
 export default class Database {
   private db: BunDatabase;
@@ -70,6 +77,13 @@ export default class Database {
     this.db.run("PRAGMA journal_mode=WAL");
     this.db.run("PRAGMA foreign_keys=ON");
     this.db.run(SCHEMA);
+    this.runMigrations();
+  }
+
+  private runMigrations(): void {
+    for (const sql of MIGRATIONS) {
+      try { this.db.run(sql); } catch { /* column may already exist */ }
+    }
   }
 
   // ── CRUD ──
@@ -77,14 +91,15 @@ export default class Database {
   insertMetrics(record: MetricsRecord): number {
     const stmt = this.db.prepare(/* sql */ `
       INSERT INTO metrics
-        (timestamp, subscription, model, prompt_tokens, completion_tokens,
+        (timestamp, subscription, provider, model, prompt_tokens, completion_tokens,
          total_tokens, latency_ms, status, stream, project, agent,
          estimated_cost, cache_hit_tokens, cache_write_tokens, error)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
     `);
     const result = stmt.run(
       record.timestamp,
       record.subscription,
+      record.provider ?? "opencode-go",
       record.model,
       record.promptTokens,
       record.completionTokens,
@@ -491,15 +506,25 @@ export default class Database {
   getFilterOptions(): {
     models: string[];
     subscriptions: string[];
+    providers: string[];
     projects: string[];
     agents: string[];
   } {
     return {
       models: this.getDistinctValues("model"),
       subscriptions: this.getDistinctValues("subscription"),
+      providers: this.getDistinctValues("provider"),
       projects: this.getDistinctValues("project"),
       agents: this.getDistinctValues("agent"),
     };
+  }
+
+  getProviderBreakdown(filters: QueryFilters): { provider: string; requests: number; totalTokens: number; cost: number }[] {
+    const { clause, params } = this.buildWhereClause(filters);
+    const rows = this.db
+      .query(`SELECT provider, COUNT(*) as requests, COALESCE(SUM(total_tokens),0) as total_tokens, COALESCE(SUM(estimated_cost),0) as cost FROM metrics ${clause} GROUP BY provider ORDER BY total_tokens DESC`)
+      .all(...params) as { provider: string; requests: number; total_tokens: number; cost: number }[];
+    return rows;
   }
 
   close(): void {
@@ -513,6 +538,7 @@ export default class Database {
       id: row.id,
       timestamp: row.timestamp,
       subscription: row.subscription,
+      provider: row.provider,
       model: row.model,
       promptTokens: row.prompt_tokens,
       completionTokens: row.completion_tokens,
@@ -600,6 +626,7 @@ export default class Database {
 
     addInFilter("model", filters.models);
     addInFilter("subscription", filters.subscriptions);
+    addInFilter("provider", filters.providers);
     addInFilter("project", filters.projects);
     addInFilter("agent", filters.agents);
 

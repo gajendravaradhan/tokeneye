@@ -162,31 +162,63 @@ interface OpenAICompatibleBody {
   usage?: UsagePayload;
 }
 
+interface AnthropicUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+}
+
+interface AnthropicResponseBody {
+  model?: string;
+  usage?: AnthropicUsage;
+}
+
 export async function extractUsageFromResponse(
   response: Response,
   requestMeta: RequestMeta,
+  provider?: string,
 ): Promise<{
   usage: UsagePayload | null;
   model: string | null;
 }> {
   try {
     const cloned = response.clone();
-    const body = (await cloned.json()) as OpenAICompatibleBody;
+    const body = (await cloned.json()) as Record<string, unknown>;
 
+    // Anthropic native format: input_tokens / output_tokens
+    if (provider === "anthropic") {
+      const aBody = body as unknown as AnthropicResponseBody;
+      const aUsage: UsagePayload | null =
+        aBody.usage &&
+        typeof aBody.usage.input_tokens === "number" &&
+        typeof aBody.usage.output_tokens === "number"
+          ? {
+              prompt_tokens: aBody.usage.input_tokens,
+              completion_tokens: aBody.usage.output_tokens,
+              total_tokens: aBody.usage.input_tokens + aBody.usage.output_tokens,
+            }
+          : null;
+      const model = typeof aBody.model === "string" ? aBody.model : requestMeta.model;
+      return { usage: aUsage, model };
+    }
+
+    // OpenAI-compatible (default)
+    const oBody = body as OpenAICompatibleBody;
     const usage: UsagePayload | null =
-      body.usage &&
-      typeof body.usage.prompt_tokens === "number" &&
-      typeof body.usage.completion_tokens === "number" &&
-      typeof body.usage.total_tokens === "number"
+      oBody.usage &&
+      typeof oBody.usage.prompt_tokens === "number" &&
+      typeof oBody.usage.completion_tokens === "number" &&
+      typeof oBody.usage.total_tokens === "number"
         ? {
-            prompt_tokens: body.usage.prompt_tokens,
-            completion_tokens: body.usage.completion_tokens,
-            total_tokens: body.usage.total_tokens,
+            prompt_tokens: oBody.usage.prompt_tokens,
+            completion_tokens: oBody.usage.completion_tokens,
+            total_tokens: oBody.usage.total_tokens,
           }
         : null;
 
     const model: string =
-      typeof body.model === "string" ? body.model : requestMeta.model;
+      typeof oBody.model === "string" ? oBody.model : requestMeta.model;
 
     return { usage, model };
   } catch {
