@@ -335,6 +335,27 @@ bun run build         # Production build
 4. Start: `tokeneye start`
 5. No changes needed to `opencode.json` — same port, same path
 
+## Auto-Restart (macOS)
+
+A launchd plist is included at `launchd/com.gajendra.tokeneye.plist`. It starts TokenEye at login and restarts it automatically within 5 seconds of any crash.
+
+```bash
+# Install
+cp launchd/com.gajendra.tokeneye.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.gajendra.tokeneye.plist
+
+# Status
+launchctl list | grep tokeneye
+
+# Stop (launchd will restart it automatically)
+launchctl stop com.gajendra.tokeneye
+
+# Disable permanently
+launchctl unload ~/Library/LaunchAgents/com.gajendra.tokeneye.plist
+```
+
+Logs: `~/.config/tokeneye/tokeneye.log`
+
 ## License
 
 [MIT](LICENSE)
