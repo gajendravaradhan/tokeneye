@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.1.0](https://github.com/gajendravaradhan/tokeneye/compare/tokeneye-v1.0.0...tokeneye-v1.1.0) (2026-06-20)
+
+
+### Features
+
+* add launchd auto-restart plist and update docs ([9608eb7](https://github.com/gajendravaradhan/tokeneye/commit/9608eb7f83e5e0f1b684540a35c8c628a9aae42e))
+* add multi-provider types (ProviderConfig, provider field) ([e923064](https://github.com/gajendravaradhan/tokeneye/commit/e923064cf2146a30297be8c44291dbeb0ca24924))
+* initial release of TokenEye v1.0.0 ([5e790c8](https://github.com/gajendravaradhan/tokeneye/commit/5e790c8dad6b9faf5a7f00131eebdea2231363bc))
+* multi-provider config with flat→provider migration ([a66bed5](https://github.com/gajendravaradhan/tokeneye/commit/a66bed5ac59b132192ba09bcaf6c1f97a5282f1e))
+* multi-provider support — proxy routing, anthropic parser, db, api, cli ([be91cb0](https://github.com/gajendravaradhan/tokeneye/commit/be91cb06e527dd791aa35f1947dd92ef50071622))
+* security hardening v1.1.0 — safe keys, CORS, rate limiting ([cf15a46](https://github.com/gajendravaradhan/tokeneye/commit/cf15a4627ed4f6cffdea11c57a88e506764c219b))
+
+
+### Bug Fixes
+
+* --port flag ignored, double-start race, swallowed errors ([1e60484](https://github.com/gajendravaradhan/tokeneye/commit/1e60484e5680c2d652cd8f7f8f80d0d465199f61))
+* remove x-tokeneye-key header, restrict /__health, fix help text ([ddaeb2d](https://github.com/gajendravaradhan/tokeneye/commit/ddaeb2d006fe797af259f7c7c8c33dede1cb0afd))
+
 ## [1.1.0] - 2026-05-31
 
 ### Security
