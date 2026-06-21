@@ -183,8 +183,8 @@ returns a non-exhaustion response.
   by name → extract the `password` field of each matching item.
 - Secrets cached in-memory only (never written to config/DB/logs).
 - Vaultwarden credentials come from env vars only (`BW_CLIENTID`, `BW_CLIENTSECRET`,
-  `BW_PASSWORD` for unlock) — never committed. Server URL configurable via
-  `BW_SERVER` (defaults to Bitwarden cloud; point at your self-hosted instance).
+  `BW_PASSWORD` for unlock) — never committed. Server: self-hosted at
+  `https://param.aiforges.app` (hardcoded default; overridable via `BW_SERVER`).
 
 **Incidental fixes**
 - Add `idleTimeout: 240` to `Bun.serve` (stops 10s mid-stream timeouts).
