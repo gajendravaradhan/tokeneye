@@ -126,17 +126,41 @@ request encoder, a streaming-response decoder, and a streaming-response encoder.
   shape, streaming event sequence, tool-call round-trip).
 
 **4. Fallback engine** (`fallback.ts` — new)
-- Embeds model-class chains derived from oh-my-openagent's agent-model-matching:
-  - **Communicative:** Claude Opus/Sonnet → Kimi K2.x → GLM 5/5.1
-  - **Principle:** GPT-5.5/5.4 → DeepSeek
-  - **Visual:** Gemini 3.1 Pro → Qwen
-  - **Utility:** GPT-5.4-Mini-Fast → Haiku/Gemini-Flash → MiniMax
-- Encodes forbidden substitutions as hard exclusions (e.g. MiniMax/Qwen never used as
-  orchestrator-class substitute).
-- For a given inbound model, resolves the ordered candidate list; for each candidate
-  decides same-dialect (rewrite model) vs cross-dialect (translate); skips candidates
-  whose provider has no funded/keyed entry or whose key is `degraded`.
-- Stops at first candidate that returns a non-exhaustion response.
+
+Chains are sourced verbatim from the OMO agent-model-matching guide. All models
+supported by the OpenCode-Go plan are permitted at the positions OMO assigns them.
+
+Per-agent chains (abridged to key models; full chains in `fallback.ts` constants):
+- **Sisyphus:** Claude Opus 4.7 → Kimi K2.6 → Kimi K2.5 → GPT-5.5 → GLM-5 → big-pickle
+- **Atlas / Sisyphus-Junior:** Claude Sonnet 4.6 → Kimi K2.6 → GPT-5.5 → MiniMax M3 → MiniMax M2.7
+- **Prometheus:** Claude Opus 4.7 → GPT-5.5 → GLM-5.1 → Gemini 3.1 Pro
+- **Oracle / Momus:** GPT-5.5 → Gemini 3.1 Pro → Claude Opus 4.7 → GLM-5.1
+- **Metis:** Claude Sonnet 4.6 → Claude Opus 4.7 → GPT-5.5 → GLM-5.1 → Kimi K2.5
+- **Explore / Librarian:** GPT-5.4-Mini-Fast → Qwen 3.5-plus → MiniMax M2.7-Highspeed → MiniMax M3 → MiniMax M2.7 → Haiku 4.5 → GPT-5-Nano
+- **Hephaestus:** GPT-5.5 (single-entry; no substitution)
+
+Per-category chains:
+- **visual-engineering / artistry:** Gemini 3.1 Pro → GLM-5 → Claude Opus 4.7 → GLM-5.1 → Kimi K2.5
+- **ultrabrain:** GPT-5.5 (xhigh) → Gemini 3.1 Pro → Claude Opus 4.7 → GLM-5.1
+- **deep:** GPT-5.5 → Claude Opus 4.7 → Gemini 3.1 Pro
+- **quick:** GPT-5.4-Mini → Haiku 4.5 → Gemini 3 Flash → MiniMax M3 → MiniMax M2.7 → GPT-5-Nano
+- **unspecified-high:** Claude Opus 4.7 → GPT-5.5 → GLM-5 → Kimi K2.5 → GLM-5.1
+- **unspecified-low:** Claude Sonnet 4.6 → GPT-5.5-Codex → Kimi K2.6 → Gemini 3 Flash → MiniMax M3 → MiniMax M2.7
+- **writing:** Kimi K2.5 → Gemini 3 Flash → Kimi K2.6 → Claude Sonnet 4.6 → MiniMax M3 → MiniMax M2.7
+
+Slot-level exclusions (not model-level bans):
+- MiniMax / Qwen: forbidden in **orchestrator slots** (Sisyphus primary, Hephaestus,
+  Oracle, Metis). Valid at all positions where OMO explicitly places them.
+- Visual categories: Kimi, GLM, Claude excluded as primary when a Gemini candidate
+  is reachable (wrong reasoning style per OMO).
+- Utility slots (Explore/Librarian): never substitute Opus-tier (cost waste, no
+  intelligence gain for grep/search work).
+
+For a given inbound model, the engine resolves the ordered candidate list from the
+matching agent/category chain; for each candidate decides same-dialect (rewrite
+model string) vs cross-dialect (translate via IR); skips candidates whose provider
+has no funded/keyed entry or whose key is `degraded`. Stops at first candidate that
+returns a non-exhaustion response.
 
 **5. Capacity tracker** (`capacity.ts` — new)
 - Per-key live state: `degraded` flag set the instant a key returns
@@ -152,12 +176,15 @@ request encoder, a streaming-response decoder, and a streaming-response encoder.
 - Target: Telegram bot "param" — bot token + chat id resolved via the secrets module.
 
 **7. Vaultwarden secrets resolver** (`secrets.ts` — new)
+- Each secret is a **separate Vaultwarden item**; item name = secret key by
+  convention (e.g. Vaultwarden item `"TELEGRAM_BOT_TOKEN"`, item `"TELEGRAM_CHAT_ID"`).
 - `bw` CLI is **not installed**; resolver tries `bw`/`rbw` if present, else direct
-  Vaultwarden REST: client_id/client_secret → bearer → fetch the "param" item →
-  extract bot token + chat id.
+  Vaultwarden REST: `BW_CLIENTID`/`BW_CLIENTSECRET` → OAuth bearer → search items
+  by name → extract the `password` field of each matching item.
 - Secrets cached in-memory only (never written to config/DB/logs).
-- Credentials for Vaultwarden access themselves come from env vars
-  (`BW_CLIENTID`, `BW_CLIENTSECRET`, `BW_PASSWORD`/session) — never committed.
+- Vaultwarden credentials come from env vars only (`BW_CLIENTID`, `BW_CLIENTSECRET`,
+  `BW_PASSWORD` for unlock) — never committed. Server URL configurable via
+  `BW_SERVER` (defaults to Bitwarden cloud; point at your self-hosted instance).
 
 **Incidental fixes**
 - Add `idleTimeout: 240` to `Bun.serve` (stops 10s mid-stream timeouts).
