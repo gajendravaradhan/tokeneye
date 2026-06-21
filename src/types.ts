@@ -10,6 +10,8 @@ export interface KeyEntry {
 export interface ProviderConfig {
   upstream: string;
   basePath: string;
+  /** When false, forward the full path (including basePath) to upstream. Default: true (strip). */
+  stripBasePath?: boolean;
   mode: ProxyMode;
   primary: string;
   failover_status: number[];

@@ -132,10 +132,12 @@ export function createHandler(
 
     const reqMeta = await extractRequestMeta(req.clone() as unknown as Request);
 
-    // Strip provider prefix from path for upstream
-    const strippedPath = url.pathname.slice(providerCfg.basePath.length) || "/";
+    const shouldStrip = providerCfg.stripBasePath !== false;
+    const forwardPath = shouldStrip
+      ? url.pathname.slice(providerCfg.basePath.length) || "/"
+      : url.pathname;
     const upstreamBase = providerCfg.upstream.replace(/\/$/, "");
-    const upstreamUrl = `${upstreamBase}${strippedPath}${url.search}`;
+    const upstreamUrl = `${upstreamBase}${forwardPath}${url.search}`;
 
     let lastStatus = 0;
     let lastError = "";
