@@ -1,28 +1,38 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef, startTransition } from "react";
 import type { QueryFilters, DashboardData } from "./types";
 import { fetchFull } from "./api";
 import Dashboard from "./components/Dashboard";
 
 const DEFAULT_FILTERS: QueryFilters = { dateRange: "day" };
 
-const REFRESH_INTERVAL_MS = 30_000;
+const REFRESH_INTERVAL_MS = 60_000;
 
 export default function App() {
   const [filters, setFilters] = useState<QueryFilters>(DEFAULT_FILTERS);
   const [data, setData] = useState<DashboardData | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const dataRef = useRef(data);
+  dataRef.current = data;
 
   const load = useCallback(async (f: QueryFilters) => {
-    setLoading(true);
     setError(null);
+    if (dataRef.current === null) {
+      setInitialLoading(true);
+    } else {
+      setRefreshing(true);
+    }
     try {
       const result = await fetchFull(f);
-      setData(result);
+      startTransition(() => {
+        setData(result);
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load dashboard data");
     } finally {
-      setLoading(false);
+      setInitialLoading(false);
+      setRefreshing(false);
     }
   }, []);
 
@@ -48,7 +58,8 @@ export default function App() {
   return (
     <Dashboard
       data={data}
-      loading={loading}
+      loading={initialLoading}
+      refreshing={refreshing}
       error={error}
       filters={filters}
       onFiltersChange={handleFiltersChange}

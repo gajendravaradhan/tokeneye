@@ -71,6 +71,26 @@ export interface AgentBreakdown {
   topModel: string;
 }
 
+export interface TaskDetail {
+  id: number;
+  timestamp: string;
+  model: string;
+  agent: string;
+  subscription: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  latency_ms: number;
+  status: number;
+  project: string;
+  error: string | null;
+}
+
+export type TaskFilters = Pick<QueryFilters, "dateRange" | "status"> & {
+  model?: string;
+  agent?: string;
+};
+
 export interface TimelinePoint {
   timestamp: string;
   tokens: number;
@@ -104,6 +124,10 @@ export interface DashboardData {
   heatmap: HourlyHeatmap[];
   topConsumers: TopConsumer[];
   filters: QueryFilters;
+  dateRangeBounds?: {
+    from: string;
+    to: string;
+  };
 }
 
 export interface FilterOptions {
