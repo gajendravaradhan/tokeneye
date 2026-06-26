@@ -6,6 +6,8 @@ interface Props {
   data: ModelBreakdown[];
   loading: boolean;
   onModelClick?: (model: string) => void;
+  onDrillDown?: (model: string) => void;
+  drillEnabled?: boolean;
 }
 
 const COLORS = ["#58a6ff", "#3fb950", "#d29922", "#f85149", "#bc8cff", "#79c0ff", "#56d364", "#e3b341", "#ff7b72", "#d2a8ff", "#a5d6ff", "#7ee787"];
@@ -17,7 +19,7 @@ function fmt(n: number, decimals = 0): string {
   return n.toLocaleString("en-US", { maximumFractionDigits: decimals });
 }
 
-export default function ModelBreakdownTable({ data, loading, onModelClick }: Props) {
+export default function ModelBreakdownTable({ data, loading, onModelClick, onDrillDown, drillEnabled }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>("totalTokens");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
@@ -43,6 +45,7 @@ export default function ModelBreakdownTable({ data, loading, onModelClick }: Pro
   if (!data.length) return <div className="empty-block">No model data available</div>;
 
   const chartData = sorted.slice(0, 12).map((m) => ({ name: m.model.split("/").pop() || m.model, tokens: m.totalTokens, full: m.model }));
+  const canDrillDown = Boolean(onModelClick);
 
   return (
     <div>
@@ -56,7 +59,7 @@ export default function ModelBreakdownTable({ data, loading, onModelClick }: Pro
             formatter={(value: number) => [fmt(value) + " tokens", ""]}
             labelFormatter={(label: string) => chartData.find((d) => d.name === label)?.full || label}
           />
-          <Bar dataKey="tokens" radius={[0, 4, 4, 0]} cursor="pointer" onClick={(entry) => onModelClick?.(entry.full)}>
+          <Bar dataKey="tokens" radius={[0, 4, 4, 0]} cursor={canDrillDown ? "pointer" : "default"} onClick={(entry) => onModelClick?.(entry.full)}>
             {chartData.map((_, i) => (
               <Cell key={i} fill={COLORS[i % COLORS.length]} />
             ))}
@@ -90,10 +93,18 @@ export default function ModelBreakdownTable({ data, loading, onModelClick }: Pro
           </thead>
           <tbody>
             {sorted.map((m, i) => (
-              <tr key={m.model} style={{ cursor: "pointer" }} onClick={() => onModelClick?.(m.model)}>
+              <tr key={m.model} style={{ cursor: canDrillDown ? "pointer" : "default" }} onClick={() => onModelClick?.(m.model)}>
                 <td>
                   <span style={{ width: 10, height: 10, borderRadius: 2, backgroundColor: COLORS[i % COLORS.length], display: "inline-block", marginRight: 8 }} />
-                  {m.model}
+                  {onDrillDown && drillEnabled ? (
+                    <span
+                      style={{ cursor: "pointer", color: "var(--accent)", textDecoration: "underline dotted" }}
+                      onClick={(e) => { e.stopPropagation(); onDrillDown(m.model); }}
+                      title="View individual requests"
+                    >
+                      {m.model}
+                    </span>
+                  ) : m.model}
                 </td>
                 <td className="text-right">{fmt(m.requests)}</td>
                 <td className="text-right">{fmt(m.totalTokens)}</td>

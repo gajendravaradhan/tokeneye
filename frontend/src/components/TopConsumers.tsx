@@ -12,7 +12,7 @@ function fmt(n: number): string {
 function trendIcon(trend: string): string {
   if (trend === "up") return "↑";
   if (trend === "down") return "↓";
-  return "→";
+  return "stable";
 }
 
 export default function TopConsumers({ data, loading }: Props) {
@@ -23,6 +23,12 @@ export default function TopConsumers({ data, loading }: Props) {
 
   return (
     <div>
+      <div style={{ fontSize: "0.75rem", color: "var(--text-dim)", marginBottom: 12, display: "flex", gap: 14 }}>
+        <span>Trend:</span>
+        <span className="trend-up">↑ increasing</span>
+        <span className="trend-down">↓ decreasing</span>
+        <span className="trend-stable">· stable</span>
+      </div>
       {data.map((item, i) => (
         <div key={item.name} style={{ display: "flex", alignItems: "center", marginBottom: 12, gap: 12 }}>
           <span style={{ width: 24, textAlign: "right", fontWeight: 700, color: "var(--text-dim)", fontSize: "0.85rem" }}>
@@ -54,7 +60,7 @@ export default function TopConsumers({ data, loading }: Props) {
           <span style={{ fontSize: "0.85rem", color: "var(--text-dim)", minWidth: 80, textAlign: "right" }}>
             ${item.cost.toFixed(4)}
           </span>
-          <span className={`trend-${item.trend}`} style={{ fontSize: "1.1rem", width: 24, textAlign: "center" }}>
+          <span className={`trend-${item.trend}`} style={{ fontSize: item.trend === "stable" ? "0.8rem" : "1.1rem", minWidth: 52, textAlign: "center" }}>
             {trendIcon(item.trend)}
           </span>
         </div>

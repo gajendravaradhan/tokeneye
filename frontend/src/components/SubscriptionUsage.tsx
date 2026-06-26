@@ -12,11 +12,16 @@ function fmt(n: number): string {
   return n.toLocaleString("en-US");
 }
 
+function normalizeSub(name: string): string {
+  const map: Record<string, string> = { default: "Anthropic", passthrough: "Passthrough", unknown: "Unknown" };
+  return map[name] || name;
+}
+
 export default function SubscriptionUsage({ data, loading }: Props) {
   if (loading) return <div className="loading"><div className="spinner" /> Loading subscriptions...</div>;
   if (!data.length) return <div className="empty-block">No subscription data available</div>;
 
-  const chartData = data.map((s) => ({ name: s.subscription, value: s.totalTokens }));
+  const chartData = data.map((s) => ({ name: normalizeSub(s.subscription), value: s.totalTokens }));
 
   return (
     <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
@@ -61,7 +66,7 @@ export default function SubscriptionUsage({ data, loading }: Props) {
             <tbody>
               {data.map((s) => (
                 <tr key={s.subscription}>
-                  <td>{s.subscription}</td>
+                  <td>{normalizeSub(s.subscription)}</td>
                   <td className="text-right">{fmt(s.requests)}</td>
                   <td className="text-right">{fmt(s.totalTokens)}</td>
                   <td className="text-right">${s.cost.toFixed(4)}</td>

@@ -5,6 +5,7 @@ import { fetchFilters } from "../api";
 interface FiltersProps {
   filters: QueryFilters;
   onChange: (f: QueryFilters) => void;
+  dateRangeBounds?: { from: string; to: string };
 }
 
 const DATE_RANGE_OPTIONS: { value: DateRange; label: string }[] = [
@@ -18,9 +19,25 @@ const DATE_RANGE_OPTIONS: { value: DateRange; label: string }[] = [
   { value: "custom", label: "Custom" },
 ];
 
-export default function Filters({ filters, onChange }: FiltersProps) {
+function normalizeSub(name: string): string {
+  const map: Record<string, string> = { default: "Anthropic", passthrough: "Passthrough", unknown: "Unknown" };
+  return map[name] || name;
+}
+
+function fmtBound(iso: string): string {
+  return new Date(iso).toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+export default function Filters({ filters, onChange, dateRangeBounds }: FiltersProps) {
   const [options, setOptions] = useState<FilterOptions>({ models: [], subscriptions: [], projects: [], agents: [] });
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
+  const [customPickerOpen, setCustomPickerOpen] = useState(false);
   const barRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -31,7 +48,10 @@ export default function Filters({ filters, onChange }: FiltersProps) {
 
   useEffect(() => {
     function handler(e: MouseEvent) {
-      if (barRef.current && !barRef.current.contains(e.target as Node)) setOpenDropdown(null);
+      if (barRef.current && !barRef.current.contains(e.target as Node)) {
+        setOpenDropdown(null);
+        setCustomPickerOpen(false);
+      }
     }
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
@@ -41,6 +61,7 @@ export default function Filters({ filters, onChange }: FiltersProps) {
     const next = { ...filters };
     if (key === "dateRange" && value !== "custom") {
       delete next.customRange;
+      setCustomPickerOpen(false);
     }
     if (value === undefined || value === null || (Array.isArray(value) && value.length === 0)) {
       delete next[key];
@@ -84,7 +105,7 @@ export default function Filters({ filters, onChange }: FiltersProps) {
                   checked={selected.includes(item)}
                   onChange={() => toggleArrayItem(key, item)}
                 />
-                {item}
+                {key === "subscriptions" ? normalizeSub(item) : item}
               </label>
             ))}
           </div>
@@ -92,6 +113,10 @@ export default function Filters({ filters, onChange }: FiltersProps) {
       </div>
     );
   }
+
+  const customLabel = filters.customRange
+    ? `${filters.customRange.from.slice(0, 10)} → ${filters.customRange.to.slice(0, 10)}`
+    : "Select dates";
 
   return (
     <div className="filter-bar" ref={barRef}>
@@ -107,37 +132,99 @@ export default function Filters({ filters, onChange }: FiltersProps) {
             </option>
           ))}
         </select>
+        {dateRangeBounds && filters.dateRange !== "custom" && (
+          <div
+            style={{
+              marginTop: 6,
+              padding: "4px 8px",
+              background: "var(--bg-hover)",
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              fontSize: "0.8rem",
+              color: "var(--text)",
+              whiteSpace: "nowrap",
+            }}
+          >
+            <span style={{ color: "var(--text-dim)", marginRight: 4 }}>Showing:</span>
+            {fmtBound(dateRangeBounds.from)}
+            <span style={{ color: "var(--text-dim)", margin: "0 4px" }}>→</span>
+            {fmtBound(dateRangeBounds.to)}
+          </div>
+        )}
       </div>
+
       {filters.dateRange === "custom" && (
-        <>
-          <div>
-            <label>From</label>
-            <input
-              type="date"
-              value={filters.customRange?.from?.slice(0, 10) || ""}
-              onChange={(e) =>
-                set("customRange", {
-                  from: e.target.value + "T00:00:00Z",
-                  to: filters.customRange?.to || new Date().toISOString(),
-                })
-              }
-            />
-          </div>
-          <div>
-            <label>To</label>
-            <input
-              type="date"
-              value={filters.customRange?.to?.slice(0, 10) || ""}
-              onChange={(e) =>
-                set("customRange", {
-                  from: filters.customRange?.from || new Date().toISOString(),
-                  to: e.target.value + "T23:59:59Z",
-                })
-              }
-            />
-          </div>
-        </>
+        <div style={{ position: "relative" }}>
+          <label>Date Range</label>
+          <button
+            className="btn btn-sm"
+            onClick={() => setCustomPickerOpen((prev) => !prev)}
+            style={{ display: "flex", alignItems: "center", gap: 6 }}
+          >
+            📅 {customLabel}
+            <span style={{ fontSize: "0.7rem" }}>{customPickerOpen ? "▲" : "▼"}</span>
+          </button>
+          {customPickerOpen && (
+            <div
+              style={{
+                position: "absolute",
+                top: "calc(100% + 4px)",
+                left: 0,
+                background: "var(--bg-card)",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius)",
+                padding: 16,
+                boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                zIndex: 20,
+                minWidth: 260,
+                display: "flex",
+                flexDirection: "column",
+                gap: 12,
+              }}
+            >
+              <div>
+                <label style={{ display: "block", marginBottom: 4, fontSize: "0.8rem", color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                  From
+                </label>
+                <input
+                  type="date"
+                  value={filters.customRange?.from?.slice(0, 10) || ""}
+                  onChange={(e) =>
+                    set("customRange", {
+                      from: e.target.value + "T00:00:00Z",
+                      to: filters.customRange?.to || new Date().toISOString(),
+                    })
+                  }
+                  style={{ width: "100%" }}
+                />
+              </div>
+              <div>
+                <label style={{ display: "block", marginBottom: 4, fontSize: "0.8rem", color: "var(--text-dim)", textTransform: "uppercase", letterSpacing: "0.5px" }}>
+                  To
+                </label>
+                <input
+                  type="date"
+                  value={filters.customRange?.to?.slice(0, 10) || ""}
+                  onChange={(e) =>
+                    set("customRange", {
+                      from: filters.customRange?.from || new Date().toISOString(),
+                      to: e.target.value + "T23:59:59Z",
+                    })
+                  }
+                  style={{ width: "100%" }}
+                />
+              </div>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={() => setCustomPickerOpen(false)}
+              >
+                Apply
+              </button>
+            </div>
+          )}
+        </div>
       )}
+
       {renderMultiSelect("models", "Models", "🤖")}
       {renderMultiSelect("subscriptions", "Subscriptions", "🔑")}
       {renderMultiSelect("projects", "Projects", "📁")}
@@ -155,9 +242,7 @@ export default function Filters({ filters, onChange }: FiltersProps) {
       </div>
       <button
         className="btn btn-sm"
-        onClick={() =>
-          onChange({ dateRange: "day" })
-        }
+        onClick={() => onChange({ dateRange: "day" })}
       >
         Clear
       </button>

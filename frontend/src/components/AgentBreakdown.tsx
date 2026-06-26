@@ -4,6 +4,9 @@ import type { AgentBreakdown } from "../types";
 interface Props {
   data: AgentBreakdown[];
   loading: boolean;
+  onAgentClick?: (agent: string) => void;
+  onDrillDown?: (agent: string) => void;
+  drillEnabled?: boolean;
 }
 
 type SortKey = "agent" | "requests" | "totalTokens" | "cost" | "topModel";
@@ -13,7 +16,7 @@ function fmt(n: number): string {
   return n.toLocaleString("en-US");
 }
 
-export default function AgentBreakdownTable({ data, loading }: Props) {
+export default function AgentBreakdownTable({ data, loading, onAgentClick, onDrillDown, drillEnabled }: Props) {
   const [sortKey, setSortKey] = useState<SortKey>("totalTokens");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
@@ -40,6 +43,7 @@ export default function AgentBreakdownTable({ data, loading }: Props) {
     const cmp = typeof av === "number" && typeof bv === "number" ? av - bv : String(av).localeCompare(String(bv));
     return sortDir === "asc" ? cmp : -cmp;
   });
+  const canDrillDown = Boolean(onAgentClick);
 
   return (
     <div className="table-wrapper">
@@ -65,8 +69,18 @@ export default function AgentBreakdownTable({ data, loading }: Props) {
         </thead>
         <tbody>
           {sorted.map((a) => (
-            <tr key={a.agent}>
-              <td style={{ fontWeight: 500 }}>{a.agent}</td>
+            <tr key={a.agent} style={{ cursor: canDrillDown ? "pointer" : "default" }} onClick={() => onAgentClick?.(a.agent)}>
+              <td style={{ fontWeight: 500 }}>
+                {onDrillDown && drillEnabled ? (
+                  <span
+                    style={{ cursor: "pointer", color: "var(--accent)", textDecoration: "underline dotted" }}
+                    onClick={(e) => { e.stopPropagation(); onDrillDown(a.agent); }}
+                    title="View individual requests"
+                  >
+                    {a.agent}
+                  </span>
+                ) : a.agent}
+              </td>
               <td className="text-right">{fmt(a.requests)}</td>
               <td className="text-right">{fmt(a.totalTokens)}</td>
               <td className="text-right">${a.cost.toFixed(4)}</td>
