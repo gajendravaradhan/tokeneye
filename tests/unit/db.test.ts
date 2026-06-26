@@ -326,6 +326,29 @@ describe("getAgentBreakdown", () => {
   });
 });
 
+describe("getTasks", () => {
+  test("returns individual rows filtered by model", () => {
+    db.insertMetrics(makeRecord({ model: "gpt-4o", agent: "build", totalTokens: 100 }));
+    db.insertMetrics(makeRecord({ model: "claude", agent: "review", totalTokens: 200 }));
+
+    const tasks = db.getTasks(defaultFilters({ models: ["gpt-4o"] }));
+    const task = tasks[0]!;
+
+    expect(tasks).toHaveLength(1);
+    expect(task.model).toBe("gpt-4o");
+    expect(task.agent).toBe("build");
+    expect(task.total_tokens).toBe(100);
+  });
+
+  test("limits task detail rows to 500", () => {
+    for (let i = 0; i < 505; i++) {
+      db.insertMetrics(makeRecord({ model: "bulk", timestamp: hoursAgo(i / 1000) }));
+    }
+
+    expect(db.getTasks(defaultFilters({ models: ["bulk"] }))).toHaveLength(500);
+  });
+});
+
 // ── getTimeline ──
 
 describe("getTimeline", () => {

@@ -14,12 +14,15 @@ function makeApiDb(db: Database) {
     getSubscriptionBreakdown: (f: QueryFilters) => db.getSubscriptionBreakdown(f),
     getProjectBreakdown: (f: QueryFilters) => db.getProjectBreakdown(f),
     getAgentBreakdown: (f: QueryFilters) => db.getAgentBreakdown(f),
+    getTasks: (f: QueryFilters) => db.getTasks(f),
     getTimeline: (f: QueryFilters) => db.getTimeline(f),
     getHeatmap: (f: QueryFilters) => db.getHeatmap(f),
     getTopConsumers: (f: QueryFilters, limit: number) => db.getTopConsumers(f, limit),
+    getProviderBreakdown: (f: QueryFilters) => db.getProviderBreakdown(f),
     getFilterOptions: () => ({
       models: db.getDistinctValues("model"),
       subscriptions: db.getDistinctValues("subscription"),
+      providers: db.getDistinctValues("provider"),
       projects: db.getDistinctValues("project"),
       agents: db.getDistinctValues("agent"),
     }),
@@ -276,6 +279,22 @@ describe("API handler", () => {
       expect(typeof a.totalTokens).toBe("number");
       expect(typeof a.topModel).toBe("string");
     }
+  });
+
+  test("GET /api/tasks returns individual request details", async () => {
+    const req = new Request("http://localhost/api/tasks?dateRange=day&model=openai/gpt-4o");
+    const res = handler(req);
+    expect(res.status).toBe(200);
+
+    const body = (await jsonBody(res)) as any[];
+    expect(body).toHaveLength(2);
+    expect(body[0].model).toBe("openai/gpt-4o");
+    expect(body[0].agent).toBe("coder");
+    expect(body[0]).toHaveProperty("prompt_tokens");
+    expect(body[0]).toHaveProperty("completion_tokens");
+    expect(body[0]).toHaveProperty("total_tokens");
+    expect(body[0]).toHaveProperty("latency_ms");
+    expect(body[0]).toHaveProperty("project");
   });
 
   test("filters by status via query param", async () => {
