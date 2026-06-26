@@ -1,5 +1,6 @@
-import { useState, useCallback } from "react";
-import type { DashboardData, QueryFilters } from "../types";
+import { useState, useCallback, useEffect } from "react";
+import type { DashboardData, QueryFilters, TaskFilters } from "../types";
+import { fetchProxyConfig, updateProxyConfig, type ProxyConfigState } from "../api";
 import Filters from "./Filters";
 import Overview from "./Overview";
 import ModelBreakdownTable from "./ModelBreakdown";
@@ -11,10 +12,13 @@ import ProjectBreakdownTable from "./ProjectBreakdown";
 import AgentBreakdownTable from "./AgentBreakdown";
 import CostSummary from "./CostSummary";
 import ExportButton from "./ExportButton";
+import InfoTooltip from "./Tooltip";
+import TaskDrilldown from "./TaskDrilldown";
 
 interface Props {
   data: DashboardData | null;
   loading: boolean;
+  refreshing?: boolean;
   error: string | null;
   filters: QueryFilters;
   onFiltersChange: (f: QueryFilters) => void;
@@ -47,6 +51,7 @@ const NAV: { key: View; label: string; icon: string }[] = [
 export default function Dashboard({
   data,
   loading,
+  refreshing,
   error,
   filters,
   onFiltersChange,
@@ -57,6 +62,35 @@ export default function Dashboard({
     return NAV.find((n) => n.key === hash) ? hash : "overview";
   });
   const [dark, setDark] = useState(() => !document.documentElement.classList.contains("light"));
+  const [proxyCfg, setProxyCfg] = useState<ProxyConfigState | null>(null);
+  const [drilldown, setDrilldown] = useState<{ type: "model" | "agent"; value: string } | null>(null);
+
+  useEffect(() => {
+    fetchProxyConfig().then(setProxyCfg).catch(() => {});
+  }, []);
+
+  async function handleTogglePrimary(label: string) {
+    await updateProxyConfig({ primary: label });
+    setProxyCfg((await fetchProxyConfig()));
+  }
+
+  async function handleToggleMode() {
+    if (!proxyCfg) return;
+    const newMode = proxyCfg.mode === "failover" ? "balance" : "failover";
+    await updateProxyConfig({ mode: newMode });
+    setProxyCfg((await fetchProxyConfig()));
+  }
+
+  const drillEnabled = filters.dateRange !== "all" && filters.dateRange !== "custom";
+
+  let drilldownFilters: TaskFilters | null = null;
+  if (drilldown) {
+    if (drilldown.type === "model") {
+      drilldownFilters = { dateRange: filters.dateRange, status: filters.status, model: drilldown.value };
+    } else {
+      drilldownFilters = { dateRange: filters.dateRange, status: filters.status, agent: drilldown.value };
+    }
+  }
 
   function navigate(v: View) {
     setView(v);
@@ -87,7 +121,8 @@ export default function Dashboard({
     minute: "2-digit",
   });
 
-  const hasData = !loading && !error && data;
+  const effectiveLoading = loading && !refreshing;
+  const hasData = !effectiveLoading && !error && data;
   const exportData = data ? (data as unknown as Record<string, unknown>) : {};
 
   return (
@@ -117,7 +152,10 @@ export default function Dashboard({
         <div className="top-bar">
           <h1>TokenEye Dashboard</h1>
           <div className="top-bar-right">
-            <span style={{ fontSize: "0.85rem", color: "var(--text-dim)" }}>{now}</span>
+            <span style={{ fontSize: "0.85rem", color: "var(--text-dim)" }}>
+              {refreshing && <span className="refreshing-indicator">↻ updating... </span>}
+              {now}
+            </span>
             <button className="btn btn-sm" onClick={onRefresh} title="Refresh">
               🔄 Refresh
             </button>
@@ -125,22 +163,62 @@ export default function Dashboard({
             <button className="theme-toggle" onClick={toggleTheme} title="Toggle theme">
               {dark ? "☀" : "🌙"}
             </button>
+            {proxyCfg && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginLeft: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 11, color: "var(--text-dim)" }}>Pro</span>
+                  <label
+                    className="toggle-switch"
+                    onClick={() => handleTogglePrimary(proxyCfg.primary === "pro" ? "personal" : "pro")}
+                    title="Toggle primary subscription"
+                  >
+                    <span className={`toggle-track ${proxyCfg.primary === "pro" ? "left" : "right"}`}>
+                      <span className="toggle-thumb" />
+                    </span>
+                  </label>
+                  <span style={{ fontSize: 11, color: "var(--text-dim)" }}>Personal</span>
+                </div>
+                <div style={{ width: 1, height: 20, background: "var(--border)" }} />
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <span style={{ fontSize: 11, color: "var(--text-dim)" }}>Failover</span>
+                  <label
+                    className="toggle-switch"
+                    onClick={handleToggleMode}
+                    title="Toggle proxy mode"
+                  >
+                    <span className={`toggle-track ${proxyCfg.mode === "failover" ? "left" : "right"}`}>
+                      <span className="toggle-thumb" />
+                    </span>
+                  </label>
+                  <span style={{ fontSize: 11, color: "var(--text-dim)" }}>Balance</span>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
-        <Filters filters={filters} onChange={onFiltersChange} />
+        <Filters filters={filters} onChange={onFiltersChange} dateRangeBounds={data?.dateRangeBounds} />
 
         {error && <div className="error-block">{error}</div>}
 
         {view === "overview" && (
           <>
-            <Overview stats={data?.overview || null} />
-            {loading && <div className="loading"><div className="spinner" /> Loading overview...</div>}
+            <Overview
+              stats={data?.overview || null}
+              subscriptionBreakdown={data?.subscriptionBreakdown}
+            />
+            {effectiveLoading && <div className="loading"><div className="spinner" /> Loading overview...</div>}
             {hasData && (
               <div className="dashboard-grid">
                 <div className="card">
                   <div className="card-header">
-                    <h3>Model Breakdown</h3>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <h3>Model Breakdown</h3>
+                      <InfoTooltip
+                        title="Model Breakdown"
+                        content="Token usage by AI model. Click a bar or row to inspect individual requests for supported date ranges."
+                      />
+                    </div>
                     <button className="btn btn-sm" onClick={() => navigate("models")}>
                       View All →
                     </button>
@@ -149,11 +227,19 @@ export default function Dashboard({
                     data={data!.modelBreakdown.slice(0, 5)}
                     loading={false}
                     onModelClick={handleModelClick}
+                    onDrillDown={drillEnabled ? (m) => setDrilldown({ type: "model", value: m }) : undefined}
+                    drillEnabled={drillEnabled}
                   />
                 </div>
                 <div className="card">
                   <div className="card-header">
-                    <h3>Subscription Usage</h3>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <h3>Subscription Usage</h3>
+                      <InfoTooltip
+                        title="Subscription Usage"
+                        content="Requests, tokens, and cost broken down by API subscription or key."
+                      />
+                    </div>
                     <button className="btn btn-sm" onClick={() => navigate("subscriptions")}>
                       View All →
                     </button>
@@ -165,7 +251,13 @@ export default function Dashboard({
                 </div>
                 <div className="card col-span">
                   <div className="card-header">
-                    <h3>Token Timeline</h3>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <h3>Token Timeline</h3>
+                      <InfoTooltip
+                        title="Token Timeline"
+                        content="Token consumption and cost plotted over time for the selected period."
+                      />
+                    </div>
                     <button className="btn btn-sm" onClick={() => navigate("timeline")}>
                       Full Timeline →
                     </button>
@@ -178,13 +270,25 @@ export default function Dashboard({
                 </div>
                 <div className="card">
                   <div className="card-header">
-                    <h3>Top Consumers</h3>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <h3>Top Consumers</h3>
+                      <InfoTooltip
+                        title="Top Consumers"
+                        content="Models, agents, projects, and subscriptions ranked by token consumption, with trend direction."
+                      />
+                    </div>
                   </div>
                   <TopConsumers data={data!.topConsumers.slice(0, 5)} loading={false} />
                 </div>
                 <div className="card">
                   <div className="card-header">
-                    <h3>Activity Heatmap</h3>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <h3>Activity Heatmap</h3>
+                      <InfoTooltip
+                        title="Activity Heatmap"
+                        content="Request intensity by hour of day (columns) and day of week (rows). Darker = more activity."
+                      />
+                    </div>
                     <button className="btn btn-sm" onClick={() => navigate("heatmap")}>
                       Full View →
                     </button>
@@ -204,8 +308,10 @@ export default function Dashboard({
             </div>
             <ModelBreakdownTable
               data={data?.modelBreakdown || []}
-              loading={loading}
+              loading={effectiveLoading}
               onModelClick={handleModelClick}
+              onDrillDown={drillEnabled ? (m) => setDrilldown({ type: "model", value: m }) : undefined}
+              drillEnabled={drillEnabled}
             />
           </div>
         )}
@@ -218,7 +324,7 @@ export default function Dashboard({
             </div>
             <SubscriptionUsage
               data={data?.subscriptionBreakdown || []}
-              loading={loading}
+              loading={effectiveLoading}
             />
           </div>
         )}
@@ -231,7 +337,7 @@ export default function Dashboard({
             </div>
             <ProjectBreakdownTable
               data={data?.projectBreakdown || []}
-              loading={loading}
+              loading={effectiveLoading}
             />
           </div>
         )}
@@ -244,7 +350,9 @@ export default function Dashboard({
             </div>
             <AgentBreakdownTable
               data={data?.agentBreakdown || []}
-              loading={loading}
+              loading={effectiveLoading}
+              onDrillDown={drillEnabled ? (a) => setDrilldown({ type: "agent", value: a }) : undefined}
+              drillEnabled={drillEnabled}
             />
           </div>
         )}
@@ -257,7 +365,7 @@ export default function Dashboard({
             </div>
             <Timeline
               data={data?.timeline || []}
-              loading={loading}
+              loading={effectiveLoading}
               dateRange={filters.dateRange}
             />
           </div>
@@ -269,7 +377,7 @@ export default function Dashboard({
               <h3>Activity Heatmap</h3>
               <small>24h × 7 day token intensity</small>
             </div>
-            <Heatmap data={data?.heatmap || []} loading={loading} />
+            <Heatmap data={data?.heatmap || []} loading={effectiveLoading} />
           </div>
         )}
 
@@ -279,7 +387,7 @@ export default function Dashboard({
               <h3>Top Consumers</h3>
               <small>Ranked by token consumption</small>
             </div>
-            <TopConsumers data={data?.topConsumers || []} loading={loading} />
+            <TopConsumers data={data?.topConsumers || []} loading={effectiveLoading} />
           </div>
         )}
 
@@ -293,9 +401,21 @@ export default function Dashboard({
               modelBreakdown={data?.modelBreakdown || []}
               subscriptionBreakdown={data?.subscriptionBreakdown || []}
               totalCost={data?.overview.totalCost || 0}
-              loading={loading}
+              loading={effectiveLoading}
             />
           </div>
+        )}
+
+        {drilldown && drilldownFilters && (
+          <TaskDrilldown
+            title={
+              drilldown.type === "model"
+                ? `Tasks: ${drilldown.value}`
+                : `Tasks: Agent ${drilldown.value}`
+            }
+            filters={drilldownFilters}
+            onClose={() => setDrilldown(null)}
+          />
         )}
       </main>
     </div>

@@ -10,6 +10,8 @@ import type {
   TopConsumer,
   DashboardData,
   FilterOptions,
+  TaskDetail,
+  TaskFilters,
 } from "./types";
 
 function buildQuery(filters: QueryFilters): string {
@@ -40,6 +42,15 @@ async function fetchApi<T>(path: string, filters: QueryFilters): Promise<T> {
   return res.json();
 }
 
+function buildTaskQuery(filters: TaskFilters): string {
+  const params = new URLSearchParams();
+  params.set("dateRange", filters.dateRange);
+  if (filters.model) params.set("model", filters.model);
+  if (filters.agent) params.set("agent", filters.agent);
+  if (filters.status) params.set("status", filters.status);
+  return params.toString();
+}
+
 export function fetchOverview(filters: QueryFilters): Promise<OverviewStats> {
   return fetchApi<OverviewStats>("/overview", filters);
 }
@@ -66,6 +77,15 @@ export function fetchAgentBreakdown(
   filters: QueryFilters
 ): Promise<AgentBreakdown[]> {
   return fetchApi<AgentBreakdown[]>("/agents", filters);
+}
+
+export async function fetchTasks(filters: TaskFilters): Promise<TaskDetail[]> {
+  const qs = buildTaskQuery(filters);
+  const res = await fetch(`/api/tasks${qs ? "?" + qs : ""}`);
+  if (!res.ok) {
+    throw new Error(`tasks failed: ${res.status} ${res.statusText}`);
+  }
+  return res.json();
 }
 
 export function fetchTimeline(
@@ -98,4 +118,25 @@ export async function fetchFilters(): Promise<FilterOptions> {
   const res = await fetch("/api/filters");
   if (!res.ok) throw new Error("Failed to fetch filter options");
   return res.json();
+}
+
+export interface ProxyConfigState {
+  mode: string;
+  primary: string;
+  keys: { label: string; caps: { window: number; budget: number; threshold?: number }[] }[];
+}
+
+export async function fetchProxyConfig(): Promise<ProxyConfigState> {
+  const res = await fetch("/api/config");
+  if (!res.ok) throw new Error(`config failed: ${res.status}`);
+  return res.json();
+}
+
+export async function updateProxyConfig(body: { mode?: string; primary?: string }): Promise<void> {
+  const res = await fetch("/api/config", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`config update failed: ${res.status}`);
 }
