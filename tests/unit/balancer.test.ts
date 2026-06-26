@@ -1,5 +1,5 @@
-import { describe, test, expect } from "bun:test";
-import { orderKeys, shouldFailover } from "../../src/balancer.ts";
+import { beforeEach, describe, expect, test } from "bun:test";
+import { clearBudgetCache, filterKeysWithBudget, orderKeys, shouldFailover } from "../../src/balancer.ts";
 import type { KeyEntry } from "../../src/types.ts";
 
 const KEYS: KeyEntry[] = [
@@ -112,5 +112,165 @@ describe("shouldFailover", () => {
 
   test("returns false when both ineligible and last attempt", () => {
     expect(shouldFailover(200, failoverStatus, true)).toBe(false);
+  });
+});
+
+// ── filterKeysWithBudget ──
+
+describe("filterKeysWithBudget", () => {
+  beforeEach(() => clearBudgetCache());
+
+  test("key without caps is always usable", () => {
+    const keys: KeyEntry[] = [{ label: "alpha", key: "sk-alpha" }];
+    const result = filterKeysWithBudget(keys, () => 0, "test");
+    expect(result.usable.length).toBe(1);
+    expect(result.allExhausted).toBe(false);
+    expect(result.statuses[0]!.exhausted).toBe(false);
+    expect(result.statuses[0]!.remainingBudget).toBe(Infinity);
+  });
+
+  test("key with empty caps array is always usable", () => {
+    const keys: KeyEntry[] = [{ label: "alpha", key: "sk-alpha", caps: [] }];
+    const result = filterKeysWithBudget(keys, () => 0, "test");
+    expect(result.usable.length).toBe(1);
+    expect(result.allExhausted).toBe(false);
+  });
+
+  test("key is exhausted when percentage >= threshold", () => {
+    const keys: KeyEntry[] = [
+      { label: "alpha", key: "sk-alpha", caps: [{ window: 3600000, budget: 10, threshold: 0.8 }] },
+    ];
+    const result = filterKeysWithBudget(keys, () => 8, "test");
+    expect(result.usable.length).toBe(0);
+    expect(result.allExhausted).toBe(true);
+    expect(result.statuses[0]!.exhausted).toBe(true);
+    expect(result.statuses[0]!.remainingBudget).toBe(0.50);
+  });
+
+  test("key is exhausted when remaining < 0.50", () => {
+    const keys: KeyEntry[] = [
+      { label: "alpha", key: "sk-alpha", caps: [{ window: 3600000, budget: 10, threshold: 0.99 }] },
+    ];
+    const result = filterKeysWithBudget(keys, () => 9.6, "test");
+    expect(result.usable.length).toBe(0);
+    expect(result.allExhausted).toBe(true);
+    expect(result.statuses[0]!.exhausted).toBe(true);
+  });
+
+  test("key is usable when under threshold and remaining >= 0.50", () => {
+    const keys: KeyEntry[] = [
+      { label: "alpha", key: "sk-alpha", caps: [{ window: 3600000, budget: 10, threshold: 0.99 }] },
+    ];
+    const result = filterKeysWithBudget(keys, () => 5, "test");
+    expect(result.usable.length).toBe(1);
+    expect(result.allExhausted).toBe(false);
+    expect(result.statuses[0]!.exhausted).toBe(false);
+    expect(result.statuses[0]!.remainingBudget).toBe(0.50);
+  });
+
+  test("uses default threshold of 0.99 when not specified", () => {
+    const keys: KeyEntry[] = [
+      { label: "alpha", key: "sk-alpha", caps: [{ window: 3600000, budget: 10 }] },
+    ];
+    const result = filterKeysWithBudget(keys, () => 9.9, "test");
+    expect(result.usable.length).toBe(0);
+    expect(result.statuses[0]!.exhausted).toBe(true);
+  });
+
+  test("key is exhausted if ANY cap is exhausted", () => {
+    const keys: KeyEntry[] = [
+      {
+        label: "alpha",
+        key: "sk-alpha",
+        caps: [
+          { window: 3600000, budget: 10, threshold: 0.5 },
+          { window: 86400000, budget: 100, threshold: 0.99 },
+        ],
+      },
+    ];
+    const result = filterKeysWithBudget(keys, (sub, window) => (window === 3600000 ? 6 : 10), "test");
+    expect(result.usable.length).toBe(0);
+    expect(result.statuses[0]!.exhausted).toBe(true);
+  });
+
+  test("remainingBudget is bounded by 0.50 minimum", () => {
+    const keys: KeyEntry[] = [
+      { label: "alpha", key: "sk-alpha", caps: [{ window: 3600000, budget: 10, threshold: 0.99 }] },
+    ];
+    const result = filterKeysWithBudget(keys, () => 9.6, "test");
+    expect(result.statuses[0]!.remainingBudget).toBeCloseTo(0.40, 2);
+  });
+
+  test("multiple keys — filters correctly", () => {
+    const keys: KeyEntry[] = [
+      { label: "alpha", key: "sk-alpha", caps: [{ window: 3600000, budget: 10, threshold: 0.8 }] },
+      { label: "beta", key: "sk-beta", caps: [{ window: 3600000, budget: 10, threshold: 0.8 }] },
+      { label: "gamma", key: "sk-gamma" },
+    ];
+    const result = filterKeysWithBudget(keys, (sub) => (sub === "alpha" ? 5 : 9), "test");
+    expect(result.usable.map((k) => k.label)).toEqual(["alpha", "gamma"]);
+    expect(result.allExhausted).toBe(false);
+    expect(result.statuses[1]!.exhausted).toBe(true);
+  });
+
+  test("callback receives correct subscription and window", () => {
+    const keys: KeyEntry[] = [
+      { label: "alpha", key: "sk-alpha", caps: [{ window: 3600000, budget: 10 }] },
+    ];
+    const calls: [string, number][] = [];
+    filterKeysWithBudget(keys, (sub, window) => {
+      calls.push([sub, window]);
+      return 0;
+    }, "test");
+    expect(calls).toEqual([["alpha", 3600000]]);
+  });
+
+  test("caches getRollingWindowCost results", () => {
+    const keys: KeyEntry[] = [
+      { label: "alpha", key: "sk-alpha", caps: [{ window: 3600000, budget: 10 }] },
+    ];
+    let calls = 0;
+    const getCost = () => {
+      calls++;
+      return 1;
+    };
+    filterKeysWithBudget(keys, getCost, "test");
+    filterKeysWithBudget(keys, getCost, "test");
+    expect(calls).toBe(1);
+  });
+
+  test("cache respects providerName scoping", () => {
+    const keys: KeyEntry[] = [
+      { label: "alpha", key: "sk-alpha", caps: [{ window: 3600000, budget: 10 }] },
+    ];
+    let calls = 0;
+    const getCost = () => {
+      calls++;
+      return 1;
+    };
+    filterKeysWithBudget(keys, getCost, "provider-a");
+    filterKeysWithBudget(keys, getCost, "provider-b");
+    expect(calls).toBe(2);
+  });
+});
+
+// ── clearBudgetCache ──
+
+describe("clearBudgetCache", () => {
+  beforeEach(() => clearBudgetCache());
+
+  test("clears cache so subsequent calls re-query", () => {
+    const keys: KeyEntry[] = [
+      { label: "alpha", key: "sk-alpha", caps: [{ window: 3600000, budget: 10 }] },
+    ];
+    let calls = 0;
+    const getCost = () => {
+      calls++;
+      return 1;
+    };
+    filterKeysWithBudget(keys, getCost, "test");
+    clearBudgetCache();
+    filterKeysWithBudget(keys, getCost, "test");
+    expect(calls).toBe(2);
   });
 });

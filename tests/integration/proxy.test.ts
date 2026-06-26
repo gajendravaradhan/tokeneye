@@ -1,6 +1,7 @@
-import { test, expect, describe, beforeAll, afterAll } from "bun:test";
+import { test, expect, describe, beforeAll, afterAll, beforeEach } from "bun:test";
 import { createHandler } from "../../src/proxy.ts";
 import Database from "../../src/db.ts";
+import { clearBudgetCache } from "../../src/balancer.ts";
 import type { ProxyConfig } from "../../src/types.ts";
 
 function makeConfig(overrides: Partial<ProxyConfig> = {}): ProxyConfig {
@@ -332,6 +333,144 @@ describe("createHandler network errors", () => {
     expect(res.status).toBe(502);
     const body = await res.json();
     expect(body.error).toContain("exhausted");
+  });
+});
+
+describe("createHandler budget-aware failover", () => {
+  beforeEach(() => clearBudgetCache());
+
+  test("all keys exhausted by caps returns 429 with stop_and_handoff", async () => {
+    const db = new Database(":memory:");
+    afterAll(() => db.close());
+    // Seed DB — both keys above 99% of $10 cap
+    const now = Date.now();
+    db.insertMetrics({ timestamp: new Date(now - 1000).toISOString(), subscription: "key1", provider: "opencode-go", model: "gpt-4", promptTokens: 0, completionTokens: 0, totalTokens: 0, latencyMs: 100, status: 200, stream: false, estimatedCost: 9.95 });
+    db.insertMetrics({ timestamp: new Date(now - 1000).toISOString(), subscription: "key2", provider: "opencode-go", model: "gpt-4", promptTokens: 0, completionTokens: 0, totalTokens: 0, latencyMs: 100, status: 200, stream: false, estimatedCost: 9.95 });
+
+    const config = makeConfig({
+      providers: {
+        "opencode-go": {
+          upstream: "https://api.openai.com",
+          basePath: "/zen/go/v1",
+          mode: "failover",
+          primary: "key1",
+          failover_status: [429, 500, 502, 503],
+          keys: [
+            { label: "key1", key: "sk-key1-abc", caps: [{ window: 3_600_000, budget: 10, threshold: 0.99 }] },
+            { label: "key2", key: "sk-key2-xyz", caps: [{ window: 3_600_000, budget: 10, threshold: 0.99 }] },
+          ],
+        },
+      },
+    });
+    const mockFetch = (async () => successResponse() as unknown as Response) as typeof fetch;
+    const handler = createHandler(() => config, db, { fetchImpl: mockFetch });
+
+    const res = await handler(
+      makeProviderRequest("/zen/go/v1/chat/completions", { model: "gpt-4", messages: [{ role: "user", content: "hi" }] }),
+    );
+
+    expect(res.status).toBe(429);
+    expect(res.headers.get("retry-after")).toBe("3600");
+    const body = await res.json();
+    expect(body.error.code).toBe("subscription_capacity_exhausted");
+    expect(body.action).toBe("stop_and_handoff");
+    expect(body.usage).toHaveLength(2);
+    expect(body.usage[0].exhausted).toBe(true);
+  });
+
+  test("primary exhausted by budget, secondary with budget fails over", async () => {
+    const db = new Database(":memory:");
+    afterAll(() => db.close());
+    // key1 at 99.5% (exhausted), key2 at 50% (usable)
+    const now = Date.now();
+    db.insertMetrics({ timestamp: new Date(now - 1000).toISOString(), subscription: "key1", provider: "opencode-go", model: "gpt-4", promptTokens: 0, completionTokens: 0, totalTokens: 0, latencyMs: 100, status: 200, stream: false, estimatedCost: 9.95 });
+    db.insertMetrics({ timestamp: new Date(now - 1000).toISOString(), subscription: "key2", provider: "opencode-go", model: "gpt-4", promptTokens: 0, completionTokens: 0, totalTokens: 0, latencyMs: 100, status: 200, stream: false, estimatedCost: 5.00 });
+
+    let callCount = 0;
+    const mockFetch = (async (_url: string, init?: RequestInit) => {
+      callCount++;
+      // key1 should never be called (budget-exhausted)
+      const auth = (init?.headers as Record<string, string>)?.authorization ?? "";
+      if (auth.includes("sk-key2-xyz")) return successResponse() as unknown as Response;
+      return errorResponse(429) as unknown as Response;
+    }) as typeof fetch;
+
+    const config = makeConfig({
+      providers: {
+        "opencode-go": {
+          upstream: "https://api.openai.com",
+          basePath: "/zen/go/v1",
+          mode: "failover",
+          primary: "key1",
+          failover_status: [429, 500, 502, 503],
+          keys: [
+            { label: "key1", key: "sk-key1-abc", caps: [{ window: 3_600_000, budget: 10, threshold: 0.99 }] },
+            { label: "key2", key: "sk-key2-xyz", caps: [{ window: 3_600_000, budget: 10, threshold: 0.99 }] },
+          ],
+        },
+      },
+    });
+    const handler = createHandler(() => config, db, { fetchImpl: mockFetch });
+
+    const res = await handler(
+      makeProviderRequest("/zen/go/v1/chat/completions", { model: "gpt-4", messages: [{ role: "user", content: "hi" }] }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(callCount).toBe(1); // only key2 was called (key1 skipped by budget)
+  });
+
+  test("keys without caps pass through normally", async () => {
+    const db = new Database(":memory:");
+    afterAll(() => db.close());
+    const mockFetch = (async () => successResponse() as unknown as Response) as typeof fetch;
+
+    const config = makeConfig(); // no caps on keys → backward compat
+    const handler = createHandler(() => config, db, { fetchImpl: mockFetch });
+
+    const res = await handler(
+      makeProviderRequest("/zen/go/v1/chat/completions", { model: "gpt-4", messages: [{ role: "user", content: "hi" }] }),
+    );
+
+    expect(res.status).toBe(200);
+  });
+
+  test("mixed keys — exhausted capped key skipped, uncapped key used", async () => {
+    const db = new Database(":memory:");
+    afterAll(() => db.close());
+    // key1 (capped) exhausted, key2 (no caps) usable
+    const now = Date.now();
+    db.insertMetrics({ timestamp: new Date(now - 1000).toISOString(), subscription: "key1", provider: "opencode-go", model: "gpt-4", promptTokens: 0, completionTokens: 0, totalTokens: 0, latencyMs: 100, status: 200, stream: false, estimatedCost: 9.95 });
+
+    let callCount = 0;
+    const mockFetch = (async () => {
+      callCount++;
+      return successResponse() as unknown as Response;
+    }) as typeof fetch;
+
+    const config = makeConfig({
+      providers: {
+        "opencode-go": {
+          upstream: "https://api.openai.com",
+          basePath: "/zen/go/v1",
+          mode: "failover",
+          primary: "key1",
+          failover_status: [429, 500, 502, 503],
+          keys: [
+            { label: "key1", key: "sk-key1-abc", caps: [{ window: 3_600_000, budget: 10, threshold: 0.99 }] },
+            { label: "key2", key: "sk-key2-xyz" }, // no caps → always usable
+          ],
+        },
+      },
+    });
+    const handler = createHandler(() => config, db, { fetchImpl: mockFetch });
+
+    const res = await handler(
+      makeProviderRequest("/zen/go/v1/chat/completions", { model: "gpt-4", messages: [{ role: "user", content: "hi" }] }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(callCount).toBe(1); // key2 used (key1 skipped)
   });
 });
 
