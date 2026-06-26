@@ -9,6 +9,7 @@ import type {
   ProjectBreakdown,
   QueryFilters,
   SubscriptionBreakdown,
+  TaskDetail,
   TimelinePoint,
   TopConsumer,
 } from "./types.ts";
@@ -67,6 +68,7 @@ const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 const MIGRATIONS = [
   `ALTER TABLE metrics ADD COLUMN provider TEXT NOT NULL DEFAULT 'opencode-go'`,
+  `CREATE INDEX IF NOT EXISTS idx_metrics_budget ON metrics(subscription, timestamp)`,
 ];
 
 export default class Database {
@@ -126,6 +128,18 @@ export default class Database {
   }
 
   // ── Aggregates ──
+
+  getRollingWindowCost(subscription: string, windowMs: number): number {
+    const cutoff = new Date(Date.now() - windowMs).toISOString();
+    const row = this.db
+      .query(
+        `SELECT COALESCE(SUM(estimated_cost), 0) AS total_cost
+         FROM metrics
+         WHERE subscription = ? AND timestamp >= ? AND status >= 200 AND status < 300`,
+      )
+      .get(subscription, cutoff) as { total_cost: number } | null;
+    return row?.total_cost ?? 0;
+  }
 
   getOverview(filters: QueryFilters): OverviewStats {
     const { clause, params } = this.buildWhereClause(filters);
@@ -220,6 +234,7 @@ export default class Database {
       .query(
         `SELECT
           subscription,
+          COALESCE(provider, 'opencode-go')            AS provider,
           COUNT(*)                                    AS requests,
           COALESCE(SUM(total_tokens), 0)              AS total_tokens,
           COALESCE(SUM(estimated_cost), 0)            AS cost,
@@ -234,6 +249,7 @@ export default class Database {
       )
       .all(...params) as {
       subscription: string;
+      provider: string;
       requests: number;
       total_tokens: number;
       cost: number;
@@ -243,6 +259,7 @@ export default class Database {
 
     return rows.map((r) => ({
       subscription: r.subscription,
+      provider: r.provider,
       requests: r.requests,
       totalTokens: r.total_tokens,
       cost: r.cost,
@@ -364,6 +381,32 @@ export default class Database {
     }));
   }
 
+  getTasks(filters: QueryFilters): TaskDetail[] {
+    const { clause, params } = this.buildWhereClause(filters);
+    const rows = this.db
+      .query(
+        `SELECT
+          id,
+          timestamp,
+          model,
+          COALESCE(agent, 'unknown') AS agent,
+          subscription,
+          prompt_tokens,
+          completion_tokens,
+          total_tokens,
+          latency_ms,
+          status,
+          COALESCE(project, 'unknown') AS project,
+          error
+        FROM metrics ${clause}
+        ORDER BY timestamp DESC
+        LIMIT 500`,
+      )
+      .all(...params) as TaskDetail[];
+
+    return rows;
+  }
+
   getTimeline(filters: QueryFilters): TimelinePoint[] {
     const { clause, params } = this.buildWhereClause(filters);
     const grouping = this.timelineGrouping(filters.dateRange);
@@ -482,6 +525,7 @@ export default class Database {
     const allowed = new Set([
       "model",
       "subscription",
+      "provider",
       "project",
       "agent",
     ]);
@@ -524,7 +568,12 @@ export default class Database {
     const rows = this.db
       .query(`SELECT provider, COUNT(*) as requests, COALESCE(SUM(total_tokens),0) as total_tokens, COALESCE(SUM(estimated_cost),0) as cost FROM metrics ${clause} GROUP BY provider ORDER BY total_tokens DESC`)
       .all(...params) as { provider: string; requests: number; total_tokens: number; cost: number }[];
-    return rows;
+    return rows.map((r) => ({
+      provider: r.provider,
+      requests: r.requests,
+      totalTokens: r.total_tokens,
+      cost: r.cost,
+    }));
   }
 
   close(): void {
@@ -620,6 +669,16 @@ export default class Database {
     // Dimension filters
     const addInFilter = (column: string, values?: string[]) => {
       if (!values || values.length === 0) return;
+      if ((column === "agent" || column === "project") && values.includes("unknown")) {
+        const concrete = values.filter((value) => value !== "unknown");
+        if (concrete.length > 0) {
+          clauses.push(`(${column} IN (${concrete.map(() => "?").join(",")}) OR ${column} IS NULL)`);
+          params.push(...concrete);
+        } else {
+          clauses.push(`${column} IS NULL`);
+        }
+        return;
+      }
       clauses.push(`${column} IN (${values.map(() => "?").join(",")})`);
       params.push(...values);
     };

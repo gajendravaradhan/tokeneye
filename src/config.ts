@@ -116,6 +116,17 @@ export function validate(c: ProxyConfig): void {
     for (const k of p.keys) {
       if (!k.label) throw new Error(`config: provider '${name}' key label must be non-empty`);
       if (!k.key) throw new Error(`config: provider '${name}' key '${k.label}' has empty value`);
+      if (k.caps !== undefined) {
+        if (!Array.isArray(k.caps)) throw new Error(`config: provider '${name}' key '${k.label}' caps must be an array`);
+        for (const cap of k.caps) {
+          if (typeof cap.window !== "number" || cap.window <= 0)
+            throw new Error(`config: provider '${name}' key '${k.label}' cap window must be a positive number (ms)`);
+          if (typeof cap.budget !== "number" || cap.budget <= 0)
+            throw new Error(`config: provider '${name}' key '${k.label}' cap budget must be a positive number (USD)`);
+          if (cap.threshold !== undefined && (typeof cap.threshold !== "number" || cap.threshold <= 0 || cap.threshold > 1))
+            throw new Error(`config: provider '${name}' key '${k.label}' cap threshold must be in (0, 1]`);
+        }
+      }
       if (labels.has(k.label)) throw new Error(`config: provider '${name}' duplicate label '${k.label}'`);
       labels.add(k.label);
     }

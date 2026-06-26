@@ -4,6 +4,32 @@
 export interface KeyEntry {
   label: string;
   key: string;
+  /** Optional rolling budget caps for budget-aware failover. */
+  caps?: CapConfig[];
+}
+
+/** Rolling budget cap for a subscription key. */
+export interface CapConfig {
+  /** Rolling window in milliseconds (e.g. 5*60*60*1000 = 5h). */
+  window: number;
+  /** Max spend in USD within the rolling window. */
+  budget: number;
+  /** Exhaustion threshold (0-1). Key is exhausted when spent/budget >= threshold. Default 0.99. */
+  threshold?: number;
+}
+
+/** Result of a budget check on a key. */
+export interface KeyCapStatus {
+  label: string;
+  exhausted: boolean;
+  remainingBudget: number;
+  details: {
+    window: number;
+    budget: number;
+    spent: number;
+    remaining: number;
+    percentage: number;
+  }[];
 }
 
 /** Per-provider configuration */
@@ -179,6 +205,21 @@ export interface AgentBreakdown {
   topModel: string;
 }
 
+export interface TaskDetail {
+  id: number;
+  timestamp: string;
+  model: string;
+  agent: string;
+  subscription: string;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  latency_ms: number;
+  status: number;
+  project: string;
+  error: string | null;
+}
+
 export interface TimelinePoint {
   timestamp: string;
   tokens: number;
@@ -212,6 +253,10 @@ export interface DashboardData {
   heatmap: HourlyHeatmap[];
   topConsumers: TopConsumer[];
   filters: QueryFilters;
+  dateRangeBounds?: {
+    from: string;
+    to: string;
+  };
 }
 
 // ── Dashboard API Endpoints ──
@@ -221,6 +266,7 @@ export interface ApiEndpoints {
   "/api/subscriptions": { query: QueryFilters; response: SubscriptionBreakdown[] };
   "/api/projects": { query: QueryFilters; response: ProjectBreakdown[] };
   "/api/agents": { query: QueryFilters; response: AgentBreakdown[] };
+  "/api/tasks": { query: QueryFilters; response: TaskDetail[] };
   "/api/timeline": { query: QueryFilters; response: TimelinePoint[] };
   "/api/heatmap": { query: QueryFilters; response: HourlyHeatmap[] };
   "/api/top-consumers": { query: QueryFilters & { limit?: number }; response: TopConsumer[] };
