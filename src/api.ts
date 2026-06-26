@@ -7,6 +7,7 @@ import type {
   ProjectBreakdown,
   QueryFilters,
   SubscriptionBreakdown,
+  TaskDetail,
   TimelinePoint,
   TopConsumer,
 } from "./types.ts";
@@ -24,6 +25,7 @@ export interface Database {
   getSubscriptionBreakdown(filters: QueryFilters): SubscriptionBreakdown[];
   getProjectBreakdown(filters: QueryFilters): ProjectBreakdown[];
   getAgentBreakdown(filters: QueryFilters): AgentBreakdown[];
+  getTasks(filters: QueryFilters): TaskDetail[];
   getTimeline(filters: QueryFilters): TimelinePoint[];
   getHeatmap(filters: QueryFilters): HourlyHeatmap[];
   getTopConsumers(filters: QueryFilters, limit: number): TopConsumer[];
@@ -46,6 +48,28 @@ function json(body: unknown, status: number, corsOrigin: string | null): Respons
   h.set("Content-Type", "application/json");
   applySecurityHeaders(h, corsOrigin);
   return new Response(JSON.stringify(body), { status, headers: h });
+}
+
+function computeDateRangeBounds(filters: QueryFilters): { from: string; to: string } {
+  const now = new Date();
+  const to = now.toISOString();
+  switch (filters.dateRange) {
+    case "hour":
+    case "session":
+      return { from: new Date(now.getTime() - 60 * 60 * 1000).toISOString(), to };
+    case "day":
+      return { from: new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(), to };
+    case "week":
+      return { from: new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString(), to };
+    case "month":
+      return { from: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString(), to };
+    case "year":
+      return { from: new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000).toISOString(), to };
+    case "custom":
+      return filters.customRange ? { from: filters.customRange.from, to: filters.customRange.to } : { from: to, to };
+    case "all":
+      return { from: "2020-01-01T00:00:00.000Z", to };
+  }
 }
 
 function parseArrayParam(value: string | null): string[] | undefined {
@@ -86,6 +110,17 @@ function parseFilters(url: URL): QueryFilters {
   if (agents) filters.agents = agents;
   if (providers) filters.providers = providers;
   if (status) filters.status = status as QueryFilters["status"];
+
+  return filters;
+}
+
+function parseTaskFilters(url: URL): QueryFilters {
+  const filters = parseFilters(url);
+  const model = validateQueryParam(url.searchParams.get("model"));
+  const agent = validateQueryParam(url.searchParams.get("agent"));
+
+  if (model) filters.models = [model];
+  if (agent) filters.agents = [agent];
 
   return filters;
 }
@@ -148,6 +183,16 @@ function createRouter(db: Database, startTime: number, rateLimiter: RateLimiter)
           return json(db.getAgentBreakdown(parseFilters(url)), 200, corsOrigin);
         }
 
+        case "/api/tasks": {
+          const filters = parseTaskFilters(url);
+          const bounds = computeDateRangeBounds(filters);
+          return json(db.getTasks({
+            ...filters,
+            customRange: bounds,
+            dateRange: "custom",
+          }), 200, corsOrigin);
+        }
+
         case "/api/timeline": {
           return json(db.getTimeline(parseFilters(url)), 200, corsOrigin);
         }
@@ -182,6 +227,7 @@ function createRouter(db: Database, startTime: number, rateLimiter: RateLimiter)
             heatmap: db.getHeatmap(filters),
             topConsumers: db.getTopConsumers(filters, limit),
             filters,
+            dateRangeBounds: computeDateRangeBounds(filters),
           };
           return json(data, 200, corsOrigin);
         }
