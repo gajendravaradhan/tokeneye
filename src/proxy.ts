@@ -1,7 +1,8 @@
 import type { ProviderConfig, ProxyConfig } from "./types.ts";
-import { orderKeys, shouldFailover } from "./balancer.ts";
+import { orderKeys, shouldFailover, filterKeysWithBudget } from "./balancer.ts";
 import { load, assertServable, normalizeConfig } from "./config.ts";
-import { extractRequestMeta, extractUsageFromResponse, calculateCost } from "./collector.ts";
+import { extractRequestMeta, extractUsageFromText, calculateCost, normalizeModel } from "./collector.ts";
+import { fallbackAgent } from "./collector.ts";
 import Database from "./db.ts";
 import {
   validateRequestBodySize,
@@ -21,6 +22,61 @@ function stripResponseHeaders(headers: Headers): Headers {
   return out;
 }
 
+/** Detect quota/balance exhaustion in an API response body, even on 2xx. */
+function isQuotaExhausted(bodyText: string): boolean {
+  if (!bodyText) return false;
+  try {
+    const body = JSON.parse(bodyText);
+    // OpenAI-compatible error format: {"error": {"type": "insufficient_quota", "code": "insufficient_quota", "message": "..."}}
+    const err = body.error;
+    if (err) {
+      const errStr = JSON.stringify(err).toLowerCase();
+      if (
+        errStr.includes("insufficient_balance") ||
+        errStr.includes("insufficient_quota") ||
+        errStr.includes("quota_exceeded") ||
+        errStr.includes("exceeded your current quota") ||
+        errStr.includes("check your plan and billing")
+      ) {
+        return true;
+      }
+    }
+    // Top-level error field
+    if (typeof body.error === "string") {
+      const msg = body.error.toLowerCase();
+      if (
+        msg.includes("insufficient_balance") ||
+        msg.includes("insufficient_quota") ||
+        msg.includes("quota_exceeded")
+      ) {
+        return true;
+      }
+    }
+    // NamedError format: {"name": "ProviderAuthError", "data": {"message": "Insufficient balance"}}
+    if (body.data?.message) {
+      const msg = String(body.data.message).toLowerCase();
+      if (
+        msg.includes("insufficient_balance") ||
+        msg.includes("insufficient_quota") ||
+        msg.includes("quota_exceeded")
+      ) {
+        return true;
+      }
+    }
+  } catch {
+    // Not JSON — check plain text for quota keywords
+    const lower = bodyText.toLowerCase();
+    if (
+      lower.includes("insufficient_balance") ||
+      lower.includes("insufficient_quota") ||
+      lower.includes("quota_exceeded")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function matchProvider(config: ProxyConfig, pathname: string): { name: string; config: ProviderConfig } | null {
   const cfg = normalizeConfig(config);
   const providers = cfg.providers ?? {};
@@ -38,8 +94,9 @@ function matchProvider(config: ProxyConfig, pathname: string): { name: string; c
   return bestMatch;
 }
 
-async function recordUsage(
-  upstreamRes: Response,
+async function recordUsageFromText(
+  bodyText: string,
+  headers: Headers,
   keyLabel: string,
   reqMeta: Awaited<ReturnType<typeof extractRequestMeta>>,
   startTime: number,
@@ -48,19 +105,21 @@ async function recordUsage(
   providerName: string,
 ): Promise<void> {
   try {
-    const cloned = upstreamRes.clone() as unknown as Response;
-    const { usage, model } = await extractUsageFromResponse(cloned, reqMeta, providerName);
+    const result = extractUsageFromText(bodyText, headers.get("content-type") ?? "", reqMeta, providerName);
 
-    const promptTokens = usage?.prompt_tokens ?? reqMeta.estimatedInputTokens ?? 0;
-    const completionTokens = usage?.completion_tokens ?? 0;
-    const totalTokens = usage?.total_tokens ?? promptTokens + completionTokens;
-    const cost = calculateCost(model ?? reqMeta.model, promptTokens, completionTokens);
+    const promptTokens = result.usage?.prompt_tokens ?? 0;
+    const completionTokens = result.usage?.completion_tokens ?? 0;
+    const totalTokens = result.usage?.total_tokens ?? promptTokens + completionTokens;
+
+    const rawModel = result.model ?? reqMeta.model;
+    const model = normalizeModel(rawModel);
+    const cost = result.upstreamCost ?? calculateCost(model, promptTokens, completionTokens);
 
     db.insertMetrics({
       timestamp: new Date().toISOString(),
       subscription: keyLabel,
       provider: providerName,
-      model: model ?? reqMeta.model,
+      model,
       promptTokens,
       completionTokens,
       totalTokens,
@@ -68,7 +127,7 @@ async function recordUsage(
       status,
       stream: reqMeta.stream,
       project: reqMeta.project,
-      agent: reqMeta.agent,
+      agent: reqMeta.agent || fallbackAgent(model),
       estimatedCost: cost,
     });
   } catch {
@@ -76,15 +135,15 @@ async function recordUsage(
       timestamp: new Date().toISOString(),
       subscription: keyLabel,
       provider: providerName,
-      model: reqMeta.model,
-      promptTokens: reqMeta.estimatedInputTokens ?? 0,
+      model: normalizeModel(reqMeta.model),
+      promptTokens: 0,
       completionTokens: 0,
-      totalTokens: reqMeta.estimatedInputTokens ?? 0,
+      totalTokens: 0,
       latencyMs: Date.now() - startTime,
       status,
       stream: reqMeta.stream,
       project: reqMeta.project,
-      agent: reqMeta.agent,
+      agent: reqMeta.agent || fallbackAgent(reqMeta.model),
     });
   }
 }
@@ -127,10 +186,61 @@ export function createHandler(
 
     const { name: providerName, config: providerCfg } = match;
     const startTime = Date.now();
+    const reqMeta = await extractRequestMeta(req.clone() as unknown as Request);
     const orderedKeys = orderKeys(providerCfg.keys, providerCfg.primary, providerCfg.mode, cursor++);
     const failoverSet = new Set(providerCfg.failover_status);
 
-    const reqMeta = await extractRequestMeta(req.clone() as unknown as Request);
+    // Budget-aware key filtering — skip keys that have exhausted their rolling caps
+    const { usable: budgetedKeys, statuses: budgetStatuses, allExhausted } = filterKeysWithBudget(
+      orderedKeys,
+      (sub, windowMs) => db.getRollingWindowCost(sub, windowMs),
+      providerName,
+    );
+    if (allExhausted) {
+      const usagePayload = budgetStatuses.map((s) => ({
+        key: s.label,
+        exhausted: s.exhausted,
+        remainingBudget: s.remainingBudget,
+        caps: s.details.map((d) => ({
+          window: d.window,
+          budget: d.budget,
+          spent: d.spent,
+          remaining: d.remaining,
+          percentage: d.percentage,
+        })),
+      }));
+      db.insertMetrics({
+        timestamp: new Date().toISOString(),
+        subscription: orderedKeys[0]?.label ?? "unknown",
+        provider: providerName,
+        model: normalizeModel(reqMeta.model),
+        promptTokens: 0,
+        completionTokens: 0,
+        totalTokens: 0,
+        latencyMs: Date.now() - startTime,
+        status: 429,
+        stream: reqMeta.stream,
+        project: reqMeta.project,
+        agent: reqMeta.agent || fallbackAgent(reqMeta.model),
+        error: `all_subscriptions_exhausted: ${JSON.stringify(usagePayload)}`,
+      });
+      return new Response(
+        JSON.stringify({
+          error: {
+            message:
+              "All subscription keys exhausted. No failover available. Stop current work, update the session handoff document, and inform the user.",
+            type: "insufficient_quota",
+            code: "subscription_capacity_exhausted",
+          },
+          usage: usagePayload,
+          action: "stop_and_handoff",
+        }),
+        {
+          status: 429,
+          headers: { "content-type": "application/json", "retry-after": "3600" },
+        },
+      );
+    }
 
     const shouldStrip = providerCfg.stripBasePath !== false;
     const forwardPath = shouldStrip
@@ -141,11 +251,11 @@ export function createHandler(
 
     let lastStatus = 0;
     let lastError = "";
-    let lastLabel = orderedKeys[0]?.label ?? "unknown";
+    let lastLabel = budgetedKeys[0]?.label ?? orderedKeys[0]?.label ?? "unknown";
 
-    for (let i = 0; i < orderedKeys.length; i++) {
-      const entry = orderedKeys[i]!;
-      const isLast = i === orderedKeys.length - 1;
+    for (let i = 0; i < budgetedKeys.length; i++) {
+      const entry = budgetedKeys[i]!;
+      const isLast = i === budgetedKeys.length - 1;
 
       try {
         const upstreamHeaders: Record<string, string> = {};
@@ -162,12 +272,24 @@ export function createHandler(
           body: bodyText || undefined,
         }) as unknown as Response;
         lastStatus = upstreamRes.status;
+        lastLabel = entry.label;
 
         if (upstreamRes.ok) {
-          recordUsage(upstreamRes as unknown as Response, entry.label, reqMeta, startTime, upstreamRes.status, db, providerName).catch(() => {});
+          const responseBody = await upstreamRes.text().catch(() => "");
+
+          // Check for quota/balance exhaustion in the response body (even on 2xx)
+          if (isQuotaExhausted(responseBody)) {
+            lastError = `quota exhausted via ${entry.label}: ${responseBody.slice(0, 500)}`;
+            console.log(`[tokeneye] ${entry.label} quota exhausted (detected in body), failing over`);
+            if (!isLast) continue;
+            // Last key also exhausted — fall through to all-keys-exhausted response
+            break;
+          }
+
+          recordUsageFromText(responseBody, upstreamRes.headers, entry.label, reqMeta, startTime, upstreamRes.status, db, providerName).catch(() => {});
 
           const stripped = stripResponseHeaders(upstreamRes.headers);
-          return new Response(upstreamRes.body, {
+          return new Response(responseBody, {
             status: upstreamRes.status,
             statusText: upstreamRes.statusText,
             headers: stripped,
@@ -175,13 +297,38 @@ export function createHandler(
         }
 
         if (shouldFailover(upstreamRes.status, failoverSet, isLast)) {
-          lastError = `HTTP ${upstreamRes.status}`;
-          try { await upstreamRes.text(); } catch { /* swallow */ }
+          const errorBody = await upstreamRes.text().catch(() => "");
+          lastError = errorBody
+            ? `HTTP ${upstreamRes.status} via ${entry.label}: ${errorBody.slice(0, 500)}`
+            : `HTTP ${upstreamRes.status} via ${entry.label}`;
+          console.log(`[tokeneye] ${entry.label} -> ${upstreamRes.status}, failing over`);
+
+          // Re-filter remaining keys — catches concurrent budget consumption
+          const remaining = budgetedKeys.slice(i + 1);
+          if (remaining.length > 0) {
+            const refreshed = filterKeysWithBudget(
+              remaining,
+              (sub, windowMs) => db.getRollingWindowCost(sub, windowMs),
+              providerName,
+            );
+            if (refreshed.allExhausted) {
+              lastError = `all remaining keys exhausted after ${entry.label} failover`;
+              break;
+            }
+            // Rebuild candidates with refreshed usable keys
+            budgetedKeys.length = i + 1;
+            budgetedKeys.push(...refreshed.usable);
+          }
           continue;
         }
 
+        // Non-failover error — capture body for diagnostics
+        const errorBody = await upstreamRes.text().catch(() => "");
+        if (errorBody) {
+          lastError = errorBody.slice(0, 2000);
+        }
         const stripped = stripResponseHeaders(upstreamRes.headers);
-        return new Response(upstreamRes.body, {
+        return new Response(errorBody || upstreamRes.body, {
           status: upstreamRes.status,
           statusText: upstreamRes.statusText,
           headers: stripped,
@@ -196,22 +343,41 @@ export function createHandler(
       timestamp: new Date().toISOString(),
       subscription: lastLabel,
       provider: providerName,
-      model: reqMeta.model,
-      promptTokens: reqMeta.estimatedInputTokens ?? 0,
+      model: normalizeModel(reqMeta.model),
+      promptTokens: 0,
       completionTokens: 0,
-      totalTokens: reqMeta.estimatedInputTokens ?? 0,
+      totalTokens: 0,
       latencyMs: Date.now() - startTime,
       status: lastStatus || 502,
       stream: reqMeta.stream,
       project: reqMeta.project,
-      agent: reqMeta.agent,
+      agent: reqMeta.agent || fallbackAgent(reqMeta.model),
       error: lastError,
     });
 
-    return new Response(JSON.stringify({ error: "All upstream keys exhausted" }), {
-      status: 502,
-      headers: { "content-type": "application/json" },
-    });
+    const finalUsage = budgetStatuses.filter((s) => s.exhausted).map((s) => ({
+      key: s.label,
+      exhausted: s.exhausted,
+      remainingBudget: s.remainingBudget,
+      caps: s.details.map((d) => ({
+        window: d.window,
+        budget: d.budget,
+        spent: d.spent,
+        remaining: d.remaining,
+        percentage: d.percentage,
+      })),
+    }));
+    return new Response(
+      JSON.stringify({
+        error: "All upstream keys exhausted",
+        usage: finalUsage,
+        action: finalUsage.length > 0 ? "stop_and_handoff" : undefined,
+      }),
+      {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      },
+    );
   };
 }
 
