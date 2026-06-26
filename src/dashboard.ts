@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { createApiHandlerFromPath } from "./api.ts";
 import { isSafePath, applySecurityHeaders } from "./security.ts";
+import { load, save, setMode, setPrimary, normalizeConfig, configPath } from "./config.ts";
+import type { ProxyConfig, ProxyMode } from "./types.ts";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -74,6 +76,14 @@ th{color:#8b949e;font-weight:500}
 </select>
 <select id="statusFilter"><option value="all">All Status</option><option value="success">Success</option><option value="error">Error</option></select>
 <button onclick="refresh()">Refresh</button>
+</div>
+<div class="filters" style="border-left:1px solid #30363d;padding-left:12px">
+<span id="cfgMode" style="font-size:12px;color:#8b949e;padding:6px 8px;background:#21262d;border-radius:6px">mode: -</span>
+<span id="cfgPrimary" style="font-size:12px;color:#8b949e;padding:6px 8px;background:#21262d;border-radius:6px">primary: -</span>
+<select id="cfgToggle" style="padding:6px 12px;background:#21262d;border:1px solid #30363d;border-radius:6px;color:#c9d1d9;font-size:13px">
+<option value="">Switch primary...</option>
+</select>
+<button onclick="toggleMode()" style="padding:6px 12px;background:#1f6feb;border:1px solid #1f6feb;border-radius:6px;color:#fff;font-size:13px;cursor:pointer">Toggle Failover/Balance</button>
 </div>
 </header>
 <main>
@@ -172,6 +182,38 @@ function render(d){
   });
 }
 
+async function loadConfig(){
+  try{
+    var res=await fetch('/api/config');
+    if(!res.ok)return;
+    var cfg=await res.json();
+    document.getElementById('cfgMode').textContent='mode: '+cfg.mode;
+    document.getElementById('cfgPrimary').textContent='primary: '+cfg.primary;
+    var sel=document.getElementById('cfgToggle');
+    sel.innerHTML='<option value="">Switch primary...</option>';
+    cfg.keys.forEach(function(k){
+      var opt=document.createElement('option');
+      opt.value=k.label;
+      opt.textContent=k.label+(k.caps&&k.caps.length?' ['+k.caps.map(function(c){return '$'+c.budget+'/'+(c.window/3600000).toFixed(0)+'h'}).join(', ')+']':'');
+      sel.appendChild(opt);
+    });
+    sel.onchange=function(){
+      if(!sel.value)return;
+      fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({primary:sel.value})}).then(function(r){if(r.ok)loadConfig()});
+    };
+  }catch(e){}
+}
+async function toggleMode(){
+  try{
+    var res=await fetch('/api/config');
+    if(!res.ok)return;
+    var cfg=await res.json();
+    var newMode=cfg.mode==='failover'?'balance':'failover';
+    await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mode:newMode})});
+    loadConfig();
+  }catch(e){}
+}
+loadConfig();
 refresh();
 setInterval(refresh,30000);
 <\/script>
@@ -205,9 +247,50 @@ export async function serveDashboard(
 
   Bun.serve({
     port: listenPort,
-    fetch(req): Response {
+    async fetch(req): Promise<Response> {
       const url = new URL(req.url);
       const pathname = url.pathname;
+
+      if (pathname === "/api/config") {
+        const cfg = load();
+        const ocg = normalizeConfig(cfg).providers!["opencode-go"];
+        if (!ocg) return new Response(JSON.stringify({ error: "opencode-go provider not found" }), { status: 404, headers: { "content-type": "application/json" } });
+
+        if (req.method === "GET") {
+          const data = {
+            mode: ocg.mode,
+            primary: ocg.primary,
+            keys: ocg.keys.map((k) => ({ label: k.label, caps: k.caps ?? [] })),
+          };
+          return new Response(JSON.stringify(data), { headers: { "content-type": "application/json" } });
+        }
+
+        if (req.method === "POST") {
+          try {
+            const body = await req.json() as { mode?: string; primary?: string };
+            let updated: ProxyConfig = cfg;
+
+            if (body.mode && (body.mode === "failover" || body.mode === "balance")) {
+              updated = setMode(updated, body.mode as ProxyMode);
+            }
+            if (body.primary) {
+              updated = setPrimary(updated, body.primary);
+            }
+
+            save(configPath(), updated);
+            return new Response(JSON.stringify({ ok: true, mode: body.mode || ocg.mode, primary: body.primary || ocg.primary }), {
+              headers: { "content-type": "application/json" },
+            });
+          } catch (err) {
+            return new Response(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }), {
+              status: 400,
+              headers: { "content-type": "application/json" },
+            });
+          }
+        }
+
+        return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405, headers: { "content-type": "application/json" } });
+      }
 
       if (pathname.startsWith("/api/")) {
         return apiHandler(req);
